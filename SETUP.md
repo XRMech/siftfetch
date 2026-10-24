@@ -139,7 +139,7 @@ A missing or invalid value falls back to its default.
 
 | Mode | Shell commands blocked | Still allowed |
 |---|---|---|
-| `strict` (default) | printing a `.env` (`cat`, `Get-Content`, `grep`), redirecting it in (`< .env`), `source .env`, one-liners like `python -c "open('.env')"`, copying it to another name | naming it; `ls`; `echo KEY=1 >> .env`; `cp .env.example .env`; `--env-file .env`; running a program that loads its own `.env`; reading `.env.example` |
+| `strict` (default) | printing a `.env` (`cat`, `Get-Content`, `grep`), redirecting it in (`< .env`), `source .env`, one-liners like `python -c "open('.env')"`, copying it to another name | naming it; `ls`; `echo KEY=1 >> .env`; `cp .env.example .env`; `--env-file .env`; searching for the text, as in `grep '.env' README.md`; running a program that loads its own `.env`; reading `.env.example` |
 | `standard` | printing and redirects only | everything above, plus `source .env` |
 | `off` | nothing | everything |
 
@@ -157,17 +157,24 @@ deleting the hook script. With `guard_lock = true`:
   - `.claude/settings.json` and `settings.local.json`, in every project;
   - `.claude/hooks/`;
   - `.codex/config.toml`;
+- paths are resolved, not matched as text: `cd ~/.claude && rm
+  settings.json` is caught, and so are relative paths and `..`;
+- deleting, moving or changing permissions on a parent folder (`rm -r
+  ~/.claude`) counts as changing what's inside it;
 - reading them stays allowed;
 - the lock switch itself sits in the folder agents can't touch, so they
-  can't turn it off.
+  can't turn it off;
+- if the lock setting can't be read (a broken config file, or a value that
+  isn't `true`, `false` or a valid table), the built-in paths stay locked
+  and the block message says why. A missing config file means off.
 
 It is your choice, and off by default. With it off, agents edit agent
 settings as usual when you ask. To change a locked file, edit it yourself,
 or set the lock to `false`, make the change, and set it back.
 
 **Limits.** The guard isn't registered for Codex yet, so the lock doesn't
-stop Codex agents. A
-script that builds a path at runtime can slip past the shell check. To make
+stop Codex agents. A script that builds a path at runtime, or a program
+the agent starts that then writes the file, can slip past the shell check. To make
 the files harder to change, also make them read-only for your account. That
 isn't immutable: anything running as your account can undo it. On Windows:
 `icacls "%USERPROFILE%\.claude\settings.json" /deny "%USERNAME%":(W)`. Undo it
