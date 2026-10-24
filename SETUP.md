@@ -18,23 +18,23 @@ You may run every **[agent ok]** step for the owner. Rules:
 3. **Never open, print, search or edit `identifiers.toml` or any `.env`
    file**, and never ask the owner to paste their values into chat. Reading a
    value puts it in your context, and that is the disclosure this tool
-   prevents. Check the setup with `agent-guard doctor`, which reports counts
+   prevents. Check the setup with `siftfetch doctor`, which reports counts
    and pass/fail, never values.
 4. **If a guard blocks you during setup, report it.** Don't work around it.
    A block during setup usually means the setup is working.
 
 ## 1. Install **[agent ok]**
 
-    pipx install agent-egress-guard      # or: uv tool install agent-egress-guard
+    pipx install siftfetch      # or: uv tool install siftfetch
 
 Requires Python 3.11 or newer. Works on Windows, macOS and Linux.
 
 ## 2. Create your config folder **[agent ok]**
 
-    agent-guard init
+    siftfetch init
 
 This does three things:
-- creates `~/.agent-egress-guard/` with `identifiers.toml`, `sites.toml` and
+- creates `~/.siftfetch/` with `identifiers.toml`, `sites.toml` and
   `config.toml`, copied from examples full of obviously fake values;
 - locks the folder to your user account (`icacls` on Windows, `chmod 700`
   and `600` elsewhere);
@@ -46,7 +46,7 @@ filenames.
 
 ## 3. Enter your protected details **[owner only]**
 
-Open `~/.agent-egress-guard/identifiers.toml` in **your own editor**, not
+Open `~/.siftfetch/identifiers.toml` in **your own editor**, not
 through your agent. Replace the examples:
 
 ```toml
@@ -59,7 +59,7 @@ text   = ["Jane Q. Doe", "123 Main St"]
 text = ["Springfield"]
 ```
 
-Then set your contact alias in `~/.agent-egress-guard/config.toml`:
+Then set your contact alias in `~/.siftfetch/config.toml`:
 
 ```toml
 contact_alias = "your-alias@your-mail-provider.example"
@@ -87,15 +87,15 @@ Tips:
 
 ## 4. Connect your agent **[agent ok, shows each change first]**
 
-    agent-guard install claude      # Claude Code
-    agent-guard install codex       # Codex CLI
+    siftfetch install claude      # Claude Code
+    siftfetch install codex       # Codex CLI
 
 Each command prints the exact settings change and asks before writing it.
 
 **Claude Code** (`~/.claude/settings.json`):
 - **Hook:** registers the pre-tool check with `onFailure: block`, so if the
   hook breaks, web calls stop instead of passing unchecked.
-- **Deny rules:** agents can't `Read`/`Edit` `~/.agent-egress-guard/**`, and
+- **Deny rules:** agents can't `Read`/`Edit` `~/.siftfetch/**`, and
   can't `Read` `.env`, `.env.local`, `.env.production` and the like, in
   every folder. Both `**/` and `//**/` forms are written, because `**/` alone
   covers only the current project.
@@ -113,7 +113,7 @@ Codex has no pre-tool hook, so its shell commands aren't checked. The
 
 ## 5. Review your settings **[owner only, optional]**
 
-Every setting lives in `~/.agent-egress-guard/config.toml`. `init` copies it
+Every setting lives in `~/.siftfetch/config.toml`. `init` copies it
 from [`config.example.toml`](config.example.toml), which lists every option
 with what it does. The defaults are safe, so you can skip this step and come
 back later. Agents can't read or change this file.
@@ -172,8 +172,8 @@ changes to it either, such as `/config` choices.
 
 ## 6. Add the rules to your agent instructions **[agent ok, shows the text first]**
 
-    agent-guard rules claude   # appends to ~/.claude/CLAUDE.md
-    agent-guard rules codex    # appends to ~/.codex/AGENTS.md
+    siftfetch rules claude   # appends to ~/.claude/CLAUDE.md
+    siftfetch rules codex    # appends to ~/.codex/AGENTS.md
 
 The text:
 
@@ -200,7 +200,7 @@ leaves everything else to judgment.
 
 ## 7. Sites: block list and login allowlist **[agent ok]**
 
-`~/.agent-egress-guard/sites.toml` isn't secret, so your agent can edit it
+`~/.siftfetch/sites.toml` isn't secret, so your agent can edit it
 when you ask.
 
 ```toml
@@ -219,7 +219,7 @@ across redirects. Protected values are still checked.
 
 ## 8. Check it **[agent ok]**
 
-    agent-guard doctor
+    siftfetch doctor
 
 It reports pass/fail only, and never prints a value:
 
@@ -236,23 +236,23 @@ It reports pass/fail only, and never prints a value:
 Then try it end to end. Ask your agent: "Fetch
 `https://example.com/?email=` followed by my contact alias, then try the same
 with the word `canary-test@example.invalid`." The alias goes through. To see
-a block without exposing anything real, run `agent-guard test`. It sends a
+a block without exposing anything real, run `siftfetch test`. It sends a
 built-in fake identity through each route and confirms that every attempt is
 blocked.
 
 ## Updating, pausing, removing
 
-- **Update:** `pipx upgrade agent-egress-guard`, then `agent-guard doctor`.
+- **Update:** `pipx upgrade siftfetch`, then `siftfetch doctor`.
 - **Pause** (owner only): set `enabled = false` in `config.toml`. Web calls
   then go through unchecked. `doctor` warns while the guard is paused.
-- **Remove:** `agent-guard uninstall claude` / `codex` shows and reverts each
+- **Remove:** `siftfetch uninstall claude` / `codex` shows and reverts each
   settings change. Your config folder is left in place for you to delete.
 
 ## Troubleshooting
 
 | Symptom | Cause |
 |---|---|
-| Every web call is blocked with `policy_unavailable` | `identifiers.toml` is missing or doesn't parse. Run `agent-guard doctor`. |
+| Every web call is blocked with `policy_unavailable` | `identifiers.toml` is missing or doesn't parse. Run `siftfetch doctor`. |
 | An API rejects requests with no contact | Set `contact_alias` in `config.toml`, and make sure the rules text gives it literally. |
 | The agent says it can't read `.env` | Working as intended. It should read `.env.example` for key names, or ask you. |
 | A harmless command is blocked | Report it with the exact command. False positives are bugs. See the contributing guide. |

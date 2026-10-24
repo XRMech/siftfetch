@@ -1,7 +1,7 @@
-# agent-egress-guard
+# SiftFetch
 
 > **Pre-release draft.** This README was written ahead of the v1 package.
-> Commands such as `agent-guard init` are the planned v1 interface.
+> Commands such as `siftfetch init` are the planned v1 interface.
 
 Guardrails for AI coding agents (Claude Code, Codex and others) that use the
 web. They control **what your agent can send**, **what it can open**, and
@@ -53,7 +53,7 @@ and the noise is exactly where hidden injections live.
 | **Who gives orders** | Rule templates for `CLAUDE.md` / `AGENTS.md`. Outside content can shape *how* the agent does your task, never *what* the task is. Three actions always need you to say so in chat: sending your personal details, loosening guards, and destructive steps the task didn't ask for. |
 
 Two sibling projects:
-- [agent-injection-lab](../agent-injection-lab) measures how gullible an
+- [injection-gauntlet](../injection-gauntlet) measures how gullible an
   agent or model is, against a local, harmless attack set;
 - `SETUP.md` gets you configured. You can hand it to your agent.
 
@@ -118,7 +118,7 @@ Read this before relying on it.
 ## Quick start
 
 See **[SETUP.md](SETUP.md)**. It takes about 10 minutes. You can do it
-yourself, or tell your agent: "Follow SETUP.md in agent-egress-guard." The
+yourself, or tell your agent: "Follow SETUP.md in siftfetch." The
 guide marks the one step only you should do: typing in your personal details.
 
 ## License
