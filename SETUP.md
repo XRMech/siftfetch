@@ -225,8 +225,11 @@ attended_only = true          # unattended/background agents never get your logi
 
 A signed-in agent is the riskiest setup there is: your private data, text
 written by strangers, and a way to send things out, all in one session. So
-login access is limited to exact sites, read-only requests, and no cookies
-across redirects. Protected values are still checked.
+login access is limited to exact sites, https (or a service you listed on
+this machine), read-only requests, and the site the fetch started at: a
+redirect to another site ends the cookies for that fetch. Protected values
+are still checked in everything but the Cookie header itself, which holds
+your login and goes only to the sites you listed.
 
 ## 8. Check it **[agent ok]**
 

@@ -47,7 +47,7 @@ and the noise is exactly where hidden injections live.
 |---|---|
 | **What your agent can send** | Every outbound request (web fetch, search query, shell `curl`, browser form) is checked against your protected values before it leaves. The check catches common disguises (`jane(at)gmail`, `%40`, `555.123.4567`, base64). A blocked request tells the agent what to do instead, for example "use the contact alias". |
 | **What your agent can open** | Agents can't read your secrets file or `.env` files, through either their file tools or the shell. Naming a `.env` file is fine; reading its contents is not. A strictness setting, `strict` by default, decides how many read routes are blocked. |
-| **Where your agent can go** | Private, loopback and link-local addresses are refused, and each hostname is resolved once and pinned. An optional allowlist names the sites where your signed-in browser session may be used: exact sites only, https only, read-only requests, never carried across redirects, and by default only for sessions you are watching. A domain blocklist is planned (see [Status](#status)). |
+| **Where your agent can go** | Private, loopback and link-local addresses are refused, and each hostname is resolved once and pinned. An optional allowlist names the sites where your signed-in browser session may be used: exact sites only, https only, read-only requests, never carried to another site after a redirect, and by default only for sessions you are watching. A domain blocklist is planned (see [Status](#status)). |
 | **What your agent sees** | Pages arrive as clean Markdown through [levels of stripping](#extraction-levels). On the documentation pages we measured, the default was about 70% smaller than raw HTML: Python docs went from ~29k to ~9k tokens, Microsoft Learn from ~25k to ~7k. Most pages never need more than the default. For pages that don't fit the known layouts, or work that needs the markup itself, the agent can choose a lighter level, down to the page source. |
 | **How the agent treats what it sees** | Every page is wrapped in an "untrusted web content" envelope with a risk grade. Text addressed to AI agents is flagged inline. Pages graded high-risk are never saved into a knowledge base. |
 | **Who gives orders** | Rule templates for `CLAUDE.md` / `AGENTS.md`. Outside content can shape *how* the agent does your task, never *what* the task is. Three actions always need you to say so in chat: sending your personal details, loosening guards, and destructive steps the task didn't ask for. |
@@ -97,12 +97,12 @@ Read this before relying on it.
 
 | Claim | Holds if the model is fooled? |
 |---|---|
-| Protected values never leave through the guard's own search and fetch tools | **Yes.** It is enforced in the transport, and it fails closed if the policy can't load. |
+| Protected values never leave through the guard's own search and fetch tools | **Yes, for the values you list, in the forms it decodes.** Every hop's URL and headers are checked in the transport, and it fails closed if the policy can't load. Two deliberate exceptions: the Cookie header on sites you allowed for logins, and anything the policy can't recognize (see the paraphrase row). |
 | Protected values never leave through native agent web tools, browser tools or shell network commands | **Partly.** The hook sees the command text only. Values assembled at runtime, child processes and piped input can get past it. |
 | Agents can't read `.env` or your secrets file | **Partly.** Claude Code's file tools are fully covered. Shell coverage is pattern-based. For Codex the hook isn't wired yet. |
 | An injected instruction is never followed | **No.** Labels and rules lower the odds; they don't remove them. |
 | Hidden text is always caught | **No.** Scripts, styles and comments are removed at every level except `source`. Text a reader can't see (background-colored, tiny, transparent, off-screen, clipped) is marked `[HIDDEN FROM READERS]` where the page states its styles inline or in a `<style>` block, and real-browser reads also check the final computed styles. Styles from external stylesheets are seen only in browser reads. The injection patterns catch known phrasings only. |
-| Real-browser reads send nothing you didn't approve | **Mostly.** Every connection goes through a local egress proxy that checks the host, resolves it itself and pins the address, so redirects, workers and frames are covered. In the browser, each request's URL and headers are value-checked, only GET, HEAD and OPTIONS pass, WebSockets never connect and service workers are blocked. A live probe against a hostile page found no way out, and a control run showed the same page leaking without the gate. For https the proxy sees only the host, so paths rely on the in-browser check. Timing and which pages you read are visible to the sites. Browser reads are off by default. |
+| Real-browser reads send nothing you didn't approve | **Mostly.** Every connection goes through a local egress proxy that checks the host, resolves it itself and pins the address, so redirects, workers and frames are covered. In the browser, each request's URL, headers and body are value-checked, only GET and HEAD pass, WebSockets never connect and service workers are blocked. A live probe against a hostile page found no way out, and a control run showed the same page leaking without the gate. **Known gap:** for https the proxy sees only the host, and Playwright doesn't show the in-browser check a server-side redirect, so the path of an https redirect isn't value-checked. The browser holds none of your data (fresh profile, no logins), so such a path can only carry what the site already received. The gap is still open. Timing and which pages you read are visible to the sites. Browser reads are off by default. |
 | Paraphrased personal data ("lives in Springfield") is caught | **No.** Matching is on exact values. |
 | Anonymity (your IP, fingerprint, timing) | Out of scope. |
 
@@ -117,12 +117,12 @@ packaged. "Planned" means designed but not yet built.
 | Disguise decoding (`(at)`, `%40`, spaced digits, base64) | Built |
 | `.env` read blocking, with `strict` / `standard` / `off` | Built (shell coverage is pattern-based) |
 | Login allowlist: exact origins, https, starting origin only, attended-only | Built |
-| Size and time budgets (10 MB, 60 s for fetches; 15 MB for browser reads) | Built |
+| Size and time budgets: fetches stop at 10 MB decoded or 60 s for all hops, headers and body (a DNS lookup can add its system timeout); browser reads check 15 MB in the page and again on the HTML copied out | Built |
 | Hidden-text marking (static and in-browser) | Built |
 | Envelope, risk grade, high-risk pages kept out of the knowledge base | Built |
 | Bot-wall recovery: official APIs, then optional real-browser reads | Built |
 | Guard lock (agents can't edit the guard's own settings) | Built, off by default |
-| Decision log with no values | Built |
+| Decision log with no values (a host that may hold one is hashed) | Built |
 | Local egress proxy for real-browser reads | Built |
 | Domain blocklist | Planned |
 | Master `enabled` switch | Planned |
