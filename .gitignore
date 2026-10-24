@@ -1,0 +1,21 @@
+# Your protected details and site lists. The real files live in
+# ~/.agent-egress-guard/; these entries catch copies made by accident.
+identifiers.toml
+sites.toml
+config.toml
+*.local.toml
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Local test and run output
+runs/
+*.log
