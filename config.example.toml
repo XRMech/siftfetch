@@ -1,0 +1,109 @@
+# agent-egress-guard settings
+#
+# `agent-guard init` copies this file to ~/.agent-egress-guard/config.toml.
+# Edit that copy in your own editor. Agents can't read or change anything in
+# that folder, so they can't loosen a setting that is blocking them.
+#
+# Every setting is optional. Leave a line out (or comment it) and the default
+# shown here applies. A misspelled or invalid value also falls back to the
+# default; `doctor` points out any it finds.
+# Run `agent-guard doctor` after editing to check the file.
+
+
+# --- Master switch -----------------------------------------------------------
+
+# true:  the guard checks every web request and shell network command.
+# false: paused. Requests go out unchecked; `doctor` warns while paused.
+enabled = true
+
+
+# --- .env and other secret files ---------------------------------------------
+
+# How hard agents are kept from reading .env files. Reading a file puts its
+# contents in the model's context, so the guard blocks access, never the name:
+# agents can always mention .env, list it or append a key to it.
+# Templates (.env.example, .sample, .template, .dist) are always readable.
+#
+#   "strict"    (default) blocks printing it (cat, Get-Content, grep), input
+#               redirects (< .env), loading it into the shell (source .env),
+#               interpreter one-liners that open it (python -c ...), and
+#               copying it to another name.
+#   "standard"  blocks printing and redirects only.
+#   "off"       blocks nothing.
+secret_file_mode = "strict"
+
+
+# --- Contact address ---------------------------------------------------------
+
+# The address agents give when an API asks for a contact email (Unpaywall,
+# Crossref, NCBI, SEC EDGAR). It is sent in place of your real address, which
+# stays protected. No default is shipped.
+#
+# It must be a real address that receives mail: a forwarding alias or spare
+# inbox. APIs refuse or deprioritize placeholders, and `doctor` rejects
+# reserved domains (example.com, .test, .invalid, .localhost).
+# contact_alias = "your-alias@your-mail-provider.example"
+
+
+# --- Pages behind bot walls --------------------------------------------------
+
+# Some sites refuse any automated client. The guard first tries the site's
+# official API (Stack Exchange, npm, GitHub, PubMed, Crossref). These
+# settings control the next step: reading the page in a real browser (your
+# installed Edge or Chrome).
+#
+# Browser reads use a fresh, empty profile: none of your logins or cookies.
+# They only read: no clicking, typing or form filling. Every request the page
+# makes is checked by the guard, and a denied one never leaves your machine.
+[browser_fetch]
+
+# When to use a real browser:
+#   "off"                (default) never. A walled page comes back as a notice
+#                        suggesting another route.
+#   "on-wall"            only when a plain fetch hits a bot wall.
+#   "always-for-listed"  always for the sites listed below, and on walls.
+mode = "off"
+
+# Where the browser window goes. In every mode it opens without taking your
+# keyboard focus, and it never moves your mouse.
+#   "offscreen"  (default) placed off the edge of your screen. You won't see it.
+#   "minimized"  starts minimized to the taskbar.
+#   "visible"    a normal window you can watch.
+# An agent can also ask for a visible window on a single read, when you've
+# asked to watch.
+window = "offscreen"
+
+# Which installed browser to drive: "msedge" (default) or "chrome".
+browser = "msedge"
+
+# Most page reads per minute, 1 to 60 (default 6). Keeps an agent from
+# hammering a site or opening windows in a loop.
+max_per_minute = 6
+
+# Sites for "always-for-listed". A site covers its subdomains:
+# "medium.com" also matches "blog.medium.com".
+sites = []
+
+
+# --- Lock the guard's own settings -------------------------------------------
+
+# An agent that keeps getting blocked may try to remove the block instead of
+# working around it: editing the hook out of its settings, or deleting the
+# hook script. The lock closes that route. It is your choice, off by default.
+#
+# false: (default) agents may edit agent settings as usual, when you ask.
+# true:  agents can't change these, whether with edit tools or with shell
+#        writes, deletes or permission changes:
+#          .claude/settings.json and settings.local.json (in every project),
+#          .claude/hooks/, and .codex/config.toml.
+#        They can still read them. To change a setting yourself, edit the
+#        file by hand, or set this to false, make the change, and set it back.
+#
+# To lock more paths, use the table form instead:
+#   guard_lock = { enabled = true, paths = ["C:/Tools/agent-egress-guard"] }
+#
+# Limits: Codex has no hook, so Codex agents aren't stopped by this. A script
+# that builds a path at runtime can slip past the shell check. For a lock
+# that holds against everything, also make the files read-only for your
+# account (see SETUP.md step 5).
+guard_lock = false

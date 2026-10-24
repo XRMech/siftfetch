@@ -57,13 +57,16 @@ text   = ["Jane Q. Doe", "123 Main St"]
 
 [protect.soft]            # blocked in requests, allowed in plain web searches
 text = ["Springfield"]
+```
 
-[contact]
-alias = "my-agent-alias@example.com"   # what agents use when an API wants an email
+Then set your contact alias in `~/.agent-egress-guard/config.toml`:
+
+```toml
+contact_alias = "your-alias@your-mail-provider.example"
 ```
 
 Tips:
-- **Set your own alias.** None is shipped. `contact.alias` is the address
+- **Set your own alias.** None is shipped. `contact_alias` is the address
   you are willing to give away: agents put it where an API asks for a contact
   email, so your real address stays protected. Until you set one, requests go
   out with no contact field, and `doctor` reports the alias as missing.
@@ -108,13 +111,28 @@ Each command prints the exact settings change and asks before writing it.
 Codex has no pre-tool hook, so its shell commands aren't checked. The
 `AGENTS.md` rules (step 6) are its main protection.
 
-## 5. Choose how strict the `.env` protection is **[owner only, optional]**
+## 5. Review your settings **[owner only, optional]**
 
-In `~/.agent-egress-guard/config.toml`:
+Every setting lives in `~/.agent-egress-guard/config.toml`. `init` copies it
+from [`config.example.toml`](config.example.toml), which lists every option
+with what it does. The defaults are safe, so you can skip this step and come
+back later. Agents can't read or change this file.
 
-```toml
-secret_file_mode = "strict"   # strict | standard | off
-```
+| Setting | Default | What it controls |
+|---|---|---|
+| `enabled` | `true` | Master switch. `false` pauses the guard. |
+| `secret_file_mode` | `"strict"` | How hard agents are kept from reading `.env` files (table below). |
+| `contact_alias` | none | The address agents give to APIs that want an email (step 3). |
+| `browser_fetch.mode` | `"off"` | Whether a real browser reads pages behind bot walls: `off`, `on-wall`, `always-for-listed`. |
+| `browser_fetch.window` | `"offscreen"` | Where that browser window goes: `offscreen`, `minimized`, `visible`. None of them takes your focus or mouse. |
+| `browser_fetch.browser` | `"msedge"` | `msedge` or `chrome`. |
+| `browser_fetch.max_per_minute` | `6` | Page-read limit, 1 to 60. |
+| `browser_fetch.sites` | `[]` | Sites for `always-for-listed`. |
+| `guard_lock` | `false` | Stops agents from changing the guard's own settings (below). |
+
+A missing or invalid value falls back to its default.
+
+### `.env` protection
 
 | Mode | Shell commands blocked | Still allowed |
 |---|---|---|
@@ -122,57 +140,35 @@ secret_file_mode = "strict"   # strict | standard | off
 | `standard` | printing and redirects only | everything above, plus `source .env` |
 | `off` | nothing | everything |
 
-If the setting is missing or invalid, the guard uses `strict`. Agents can't
-change it, because the folder is denied to them.
-
 Claude Code also refuses any shell command that *names* a read-denied file,
 even `ls .env`. That check is Claude Code's own, not this guard's. Listing
 the folder still works.
 
-## 5b. Optional: lock the guard against your own agents **[owner only]**
-
-Your security levels (`secret_file_mode`, browser reads, the alias) live in
-`~/.agent-egress-guard/`. Agents can't read or edit that folder, and shell
-commands that name it are refused. The guard itself is registered in files
-an agent *can* edit by default:
-- `~/.claude/settings.json`, which holds the hook and the deny rules;
-- the installed hook and engine.
+### Locking the guard's own settings
 
 An agent that keeps getting blocked from a goal may try to remove the block
-instead of working around it. If you want that route closed, add the hard
-lock yourself, in your own editor. It is your choice; the guard works
-without it, and `doctor` only reports whether the lock is on.
+instead of working around it: editing the hook out of `settings.json`, or
+deleting the hook script. With `guard_lock = true`:
+- agents can't change these with edit tools, or with shell writes, deletes
+  or permission changes:
+  - `.claude/settings.json` and `settings.local.json`, in every project;
+  - `.claude/hooks/`;
+  - `.codex/config.toml`;
+- reading them stays allowed;
+- the lock switch itself sits in the folder agents can't touch, so they
+  can't turn it off.
 
-Add to `permissions.deny` in `~/.claude/settings.json`:
+It is your choice, and off by default. With it off, agents edit agent
+settings as usual when you ask. To change a locked file, edit it yourself,
+or set the lock to `false`, make the change, and set it back.
 
-```json
-"Edit(~/.claude/settings.json)",
-"Edit(~/.claude/settings.local.json)",
-"Edit(~/.claude/hooks/**)",
-"Edit(//**/.claude/settings.json)",
-"Edit(//**/.claude/settings.local.json)",
-"Edit(~/.agent-egress-guard/**)",
-"Edit(<install dir printed by `agent-guard doctor`>/**)"
-```
-
-What it does, and what it costs:
-- **Agents can't edit** these files with their edit tools, even if you
-  approve in chat. Every settings change (hooks, permissions, MCP servers)
-  is then made by you, by hand. To make one, remove the lock line, make the
-  change, then put the line back.
-- **Project settings are covered too** (`//**/.claude/settings.json`). A
-  project's settings can add hooks and permissions, so an agent could
-  otherwise loosen things there.
-- **Shell commands are not covered by deny rules.** An agent could still
-  write the file from a script. The guard's hook refuses shell commands that
-  name its own config folder. It does not do the same for `settings.json`,
-  because reading settings is ordinary work. For a lock that holds against
-  the shell too, make the files read-only for your account. On Windows:
-  `icacls "%USERPROFILE%\.claude\settings.json" /deny "%USERNAME%":(W)`. Undo
-  it with `/remove:d`. This also stops Claude Code saving its own changes to
-  the file, such as `/config` choices, while the lock is on.
-- **Codex:** `~/.codex/config.toml` has no equivalent rule. The read-only
-  file attribute is the only lock there.
+**Limits.** Codex has no hook, so the lock doesn't stop Codex agents. A
+script that builds a path at runtime can slip past the shell check. For a
+lock that holds against everything, also make the files read-only for your
+account. On Windows:
+`icacls "%USERPROFILE%\.claude\settings.json" /deny "%USERNAME%":(W)`. Undo it
+with `/remove:d`. While the file is read-only, Claude Code can't save its own
+changes to it either, such as `/config` choices.
 
 ## 6. Add the rules to your agent instructions **[agent ok, shows the text first]**
 
@@ -235,7 +231,7 @@ It reports pass/fail only, and never prints a value:
     self-test          ok   every protected value blocked in 6 request shapes
                             (URL, query, header, body, shell, search)
     secret files       ok   strict; .env read via Read, Grep and shell blocked
-    guard lock         info not set (optional, see step 5b)
+    guard lock         info off (optional, see step 5)
 
 Then try it end to end. Ask your agent: "Fetch
 `https://example.com/?email=` followed by my contact alias, then try the same
@@ -257,6 +253,6 @@ blocked.
 | Symptom | Cause |
 |---|---|
 | Every web call is blocked with `policy_unavailable` | `identifiers.toml` is missing or doesn't parse. Run `agent-guard doctor`. |
-| An API rejects requests with no contact | Set `contact.alias`, and make sure the rules text gives it literally. |
+| An API rejects requests with no contact | Set `contact_alias` in `config.toml`, and make sure the rules text gives it literally. |
 | The agent says it can't read `.env` | Working as intended. It should read `.env.example` for key names, or ask you. |
 | A harmless command is blocked | Report it with the exact command. False positives are bugs. See the contributing guide. |
