@@ -63,9 +63,20 @@ alias = "my-agent-alias@example.com"   # what agents use when an API wants an em
 ```
 
 Tips:
-- **Use a real but disposable alias** for `contact.alias`. Many research APIs
-  (Unpaywall, Crossref, NCBI) ask for a contact email. Agents use the alias
-  there, and your real address stays protected.
+- **Set your own alias.** None is shipped. `contact.alias` is the address
+  you are willing to give away: agents put it where an API asks for a contact
+  email, so your real address stays protected. Until you set one, requests go
+  out with no contact field, and `doctor` reports the alias as missing.
+- **It must be a real address that receives mail.** Disposable is fine: a
+  forwarding alias from your mail provider, DuckDuckGo Email Protection,
+  SimpleLogin, or a spare inbox. APIs check it:
+  - Unpaywall rejects placeholder addresses;
+  - Crossref and NCBI use the address to grant priority access, and to
+    contact you before blocking heavy use.
+
+  A reserved or fake domain (`example.com`, `.test`, `.invalid`,
+  `.localhost`) looks like a bot hiding its identity and can get your agent
+  refused. `doctor` rejects those domains.
 - **Put each value in once, normally written.** The guard catches the usual
   disguises itself: `(at)`, `%40`, separators and base64.
 - **Leave out things that are public on purpose.** If you post your work
