@@ -79,8 +79,10 @@ guard_lock = false
 # installed Edge or Chrome).
 #
 # Browser reads use a fresh, empty profile: none of your logins or cookies.
-# They only read: no clicking, typing or form filling. Every request the page
-# makes is checked by the guard, and a denied one never leaves your machine.
+# They only read: no clicking, typing or form filling. The browser's only
+# route out is a local proxy that checks every connection, and the page may
+# only fetch (no form posts, no WebSockets). A denied request never leaves
+# your machine.
 [browser_fetch]
 
 # When to use a real browser:

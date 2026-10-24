@@ -102,7 +102,7 @@ Read this before relying on it.
 | Agents can't read `.env` or your secrets file | **Partly.** Claude Code's file tools are fully covered. Shell coverage is pattern-based. For Codex the hook isn't wired yet. |
 | An injected instruction is never followed | **No.** Labels and rules lower the odds; they don't remove them. |
 | Hidden text is always caught | **No.** Scripts, styles and comments are removed at every level except `source`. Text a reader can't see (background-colored, tiny, transparent, off-screen, clipped) is marked `[HIDDEN FROM READERS]` where the page states its styles inline or in a `<style>` block, and real-browser reads also check the final computed styles. Styles from external stylesheets are seen only in browser reads. The injection patterns catch known phrasings only. |
-| Real-browser reads send nothing you didn't approve | **Partly.** Every request the page makes is checked by URL, service workers are blocked and WebSockets are gated. Until the planned local egress proxy lands, redirect hops inside the browser and request bodies are not checked. Browser reads are off by default. |
+| Real-browser reads send nothing you didn't approve | **Mostly.** Every connection goes through a local egress proxy that checks the host, resolves it itself and pins the address, so redirects, workers and frames are covered. In the browser, each request's URL and headers are value-checked, only GET, HEAD and OPTIONS pass, WebSockets never connect and service workers are blocked. A live probe against a hostile page found no way out, and a control run showed the same page leaking without the gate. For https the proxy sees only the host, so paths rely on the in-browser check. Timing and which pages you read are visible to the sites. Browser reads are off by default. |
 | Paraphrased personal data ("lives in Springfield") is caught | **No.** Matching is on exact values. |
 | Anonymity (your IP, fingerprint, timing) | Out of scope. |
 
@@ -123,7 +123,7 @@ packaged. "Planned" means designed but not yet built.
 | Bot-wall recovery: official APIs, then optional real-browser reads | Built |
 | Guard lock (agents can't edit the guard's own settings) | Built, off by default |
 | Decision log with no values | Built |
-| Local egress proxy for real-browser reads | Planned |
+| Local egress proxy for real-browser reads | Built |
 | Domain blocklist | Planned |
 | Master `enabled` switch | Planned |
 | TOML config files (`identifiers.toml`, `sites.toml`) | Planned. Today the engine reads JSON. |
