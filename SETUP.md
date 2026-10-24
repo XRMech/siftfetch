@@ -129,6 +129,51 @@ Claude Code also refuses any shell command that *names* a read-denied file,
 even `ls .env`. That check is Claude Code's own, not this guard's. Listing
 the folder still works.
 
+## 5b. Optional: lock the guard against your own agents **[owner only]**
+
+Your security levels (`secret_file_mode`, browser reads, the alias) live in
+`~/.agent-egress-guard/`. Agents can't read or edit that folder, and shell
+commands that name it are refused. The guard itself is registered in files
+an agent *can* edit by default:
+- `~/.claude/settings.json`, which holds the hook and the deny rules;
+- the installed hook and engine.
+
+An agent that keeps getting blocked from a goal may try to remove the block
+instead of working around it. If you want that route closed, add the hard
+lock yourself, in your own editor. It is your choice; the guard works
+without it, and `doctor` only reports whether the lock is on.
+
+Add to `permissions.deny` in `~/.claude/settings.json`:
+
+```json
+"Edit(~/.claude/settings.json)",
+"Edit(~/.claude/settings.local.json)",
+"Edit(~/.claude/hooks/**)",
+"Edit(//**/.claude/settings.json)",
+"Edit(//**/.claude/settings.local.json)",
+"Edit(~/.agent-egress-guard/**)",
+"Edit(<install dir printed by `agent-guard doctor`>/**)"
+```
+
+What it does, and what it costs:
+- **Agents can't edit** these files with their edit tools, even if you
+  approve in chat. Every settings change (hooks, permissions, MCP servers)
+  is then made by you, by hand. To make one, remove the lock line, make the
+  change, then put the line back.
+- **Project settings are covered too** (`//**/.claude/settings.json`). A
+  project's settings can add hooks and permissions, so an agent could
+  otherwise loosen things there.
+- **Shell commands are not covered by deny rules.** An agent could still
+  write the file from a script. The guard's hook refuses shell commands that
+  name its own config folder. It does not do the same for `settings.json`,
+  because reading settings is ordinary work. For a lock that holds against
+  the shell too, make the files read-only for your account. On Windows:
+  `icacls "%USERPROFILE%\.claude\settings.json" /deny "%USERNAME%":(W)`. Undo
+  it with `/remove:d`. This also stops Claude Code saving its own changes to
+  the file, such as `/config` choices, while the lock is on.
+- **Codex:** `~/.codex/config.toml` has no equivalent rule. The read-only
+  file attribute is the only lock there.
+
 ## 6. Add the rules to your agent instructions **[agent ok, shows the text first]**
 
     agent-guard rules claude   # appends to ~/.claude/CLAUDE.md
@@ -190,6 +235,7 @@ It reports pass/fail only, and never prints a value:
     self-test          ok   every protected value blocked in 6 request shapes
                             (URL, query, header, body, shell, search)
     secret files       ok   strict; .env read via Read, Grep and shell blocked
+    guard lock         info not set (optional, see step 5b)
 
 Then try it end to end. Ask your agent: "Fetch
 `https://example.com/?email=` followed by my contact alias, then try the same
