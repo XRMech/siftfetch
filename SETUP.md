@@ -108,8 +108,11 @@ Each command prints the exact settings change and asks before writing it.
 - sets `web_search = "disabled"`, because Codex's hosted search leaves through
   the provider, outside every local check.
 
-Codex has no pre-tool hook, so its shell commands aren't checked. The
-`AGENTS.md` rules (step 6) are its main protection.
+Codex CLI 0.124 and later has a PreToolUse hook with the same payload as
+Claude Code's, so the guard can check Codex's shell commands too. `install
+codex` doesn't register it yet (planned). Until then the `AGENTS.md` rules
+(step 6) are Codex's main protection. When it is registered, remember that
+Codex silently skips a hook it hasn't trusted.
 
 ## 5. Review your settings **[owner only, optional]**
 
@@ -162,7 +165,8 @@ It is your choice, and off by default. With it off, agents edit agent
 settings as usual when you ask. To change a locked file, edit it yourself,
 or set the lock to `false`, make the change, and set it back.
 
-**Limits.** Codex has no hook, so the lock doesn't stop Codex agents. A
+**Limits.** The guard isn't registered for Codex yet, so the lock doesn't
+stop Codex agents. A
 script that builds a path at runtime can slip past the shell check. To make
 the files harder to change, also make them read-only for your account. That
 isn't immutable: anything running as your account can undo it. On Windows:

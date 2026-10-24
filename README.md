@@ -47,7 +47,7 @@ and the noise is exactly where hidden injections live.
 |---|---|
 | **What your agent can send** | Every outbound request (web fetch, search query, shell `curl`, browser form) is checked against your protected values before it leaves. The check catches common disguises (`jane(at)gmail`, `%40`, `555.123.4567`, base64). A blocked request tells the agent what to do instead, for example "use the contact alias". |
 | **What your agent can open** | Agents can't read your secrets file or `.env` files, through either their file tools or the shell. Naming a `.env` file is fine; reading its contents is not. A strictness setting, `strict` by default, decides how many read routes are blocked. |
-| **Where your agent can go** | A blocklist of domains is refused on every route and filtered out of search results. An optional allowlist names the sites where your signed-in browser session may be used: exact sites only, read-only requests, never carried across redirects. |
+| **Where your agent can go** | Private, loopback and link-local addresses are refused, and each hostname is resolved once and pinned. An optional allowlist names the sites where your signed-in browser session may be used: exact sites only, https only, read-only requests, never carried across redirects, and by default only for sessions you are watching. A domain blocklist is planned (see [Status](#status)). |
 | **What your agent sees** | Pages arrive as clean Markdown through [levels of stripping](#extraction-levels). On the documentation pages we measured, the default was about 70% smaller than raw HTML: Python docs went from ~29k to ~9k tokens, Microsoft Learn from ~25k to ~7k. Most pages never need more than the default. For pages that don't fit the known layouts, or work that needs the markup itself, the agent can choose a lighter level, down to the page source. |
 | **How the agent treats what it sees** | Every page is wrapped in an "untrusted web content" envelope with a risk grade. Text addressed to AI agents is flagged inline. Pages graded high-risk are never saved into a knowledge base. |
 | **Who gives orders** | Rule templates for `CLAUDE.md` / `AGENTS.md`. Outside content can shape *how* the agent does your task, never *what* the task is. Three actions always need you to say so in chat: sending your personal details, loosening guards, and destructive steps the task didn't ask for. |
@@ -99,11 +99,38 @@ Read this before relying on it.
 |---|---|
 | Protected values never leave through the guard's own search and fetch tools | **Yes.** It is enforced in the transport, and it fails closed if the policy can't load. |
 | Protected values never leave through native agent web tools, browser tools or shell network commands | **Partly.** The hook sees the command text only. Values assembled at runtime, child processes and piped input can get past it. |
-| Agents can't read `.env` or your secrets file | **Partly.** Claude Code's file tools are fully covered. Shell coverage is pattern-based. Codex has no equivalent hook. |
+| Agents can't read `.env` or your secrets file | **Partly.** Claude Code's file tools are fully covered. Shell coverage is pattern-based. For Codex the hook isn't wired yet. |
 | An injected instruction is never followed | **No.** Labels and rules lower the odds; they don't remove them. |
-| Hidden text is always caught | **No.** Scripts, styles and comments are removed at every level except `source`. Text hidden with CSS is kept, and the page is graded high-risk if that text addresses agents. The patterns catch known phrasings only. |
+| Hidden text is always caught | **No.** Scripts, styles and comments are removed at every level except `source`. Text a reader can't see (background-colored, tiny, transparent, off-screen, clipped) is marked `[HIDDEN FROM READERS]` where the page states its styles inline or in a `<style>` block, and real-browser reads also check the final computed styles. Styles from external stylesheets are seen only in browser reads. The injection patterns catch known phrasings only. |
+| Real-browser reads send nothing you didn't approve | **Partly.** Every request the page makes is checked by URL, service workers are blocked and WebSockets are gated. Until the planned local egress proxy lands, redirect hops inside the browser and request bodies are not checked. Browser reads are off by default. |
 | Paraphrased personal data ("lives in Springfield") is caught | **No.** Matching is on exact values. |
 | Anonymity (your IP, fingerprint, timing) | Out of scope. |
+
+## Status
+
+The engine below runs today in the author's own setup and is being
+packaged. "Planned" means designed but not yet built.
+
+| Capability | Status |
+|---|---|
+| Value check on fetch, search, native web tools, shell network commands and browser forms | Built |
+| Disguise decoding (`(at)`, `%40`, spaced digits, base64) | Built |
+| `.env` read blocking, with `strict` / `standard` / `off` | Built (shell coverage is pattern-based) |
+| Login allowlist: exact origins, https, starting origin only, attended-only | Built |
+| Size and time budgets (10 MB, 60 s for fetches; 15 MB for browser reads) | Built |
+| Hidden-text marking (static and in-browser) | Built |
+| Envelope, risk grade, high-risk pages kept out of the knowledge base | Built |
+| Bot-wall recovery: official APIs, then optional real-browser reads | Built |
+| Guard lock (agents can't edit the guard's own settings) | Built, off by default |
+| Decision log with no values | Built |
+| Local egress proxy for real-browser reads | Planned |
+| Domain blocklist | Planned |
+| Master `enabled` switch | Planned |
+| TOML config files (`identifiers.toml`, `sites.toml`) | Planned. Today the engine reads JSON. |
+| `siftfetch init` / `doctor`, the installable package | Planned |
+| `source` extraction level | Planned |
+| The same hook for Codex | Planned. Codex CLI 0.124+ has a PreToolUse hook with the same payload and output, so the guard script can run there unchanged. Not yet wired or tested. |
+| Anonymity (IP, fingerprint, timing) | Not planned |
 
 ## How it fits together
 
