@@ -45,6 +45,32 @@ secret_file_mode = "strict"
 # contact_alias = "your-alias@your-mail-provider.example"
 
 
+# --- Lock the guard's own settings -------------------------------------------
+
+# An agent that keeps getting blocked may try to remove the block instead of
+# working around it: editing the hook out of its settings, or deleting the
+# hook script. The lock closes that route. It is your choice, off by default.
+#
+# false: (default) agents may edit agent settings as usual, when you ask.
+# true:  agents can't change these, whether with edit tools or with shell
+#        writes, deletes or permission changes:
+#          .claude/settings.json and settings.local.json (in every project),
+#          .claude/hooks/, and .codex/config.toml.
+#        They can still read them. To change a setting yourself, edit the
+#        file by hand, or set this to false, make the change, and set it back.
+#
+# To lock more paths, use the table form instead:
+#   guard_lock = { enabled = true, paths = ["C:/Tools/siftfetch"] }
+#
+# Limits: Codex has no hook, so Codex agents aren't stopped by this. A script
+# that builds a path at runtime can slip past the shell check. Making the
+# files read-only for your account (SETUP.md step 5) makes them harder to
+# change, though not impossible: the same account can undo it.
+guard_lock = false
+
+
+# Everything below this line belongs to [browser_fetch]. Top-level settings
+# go above it: TOML puts every key after a [table] header inside that table.
 # --- Pages behind bot walls --------------------------------------------------
 
 # Some sites refuse any automated client. The guard first tries the site's
@@ -83,27 +109,3 @@ max_per_minute = 6
 # Sites for "always-for-listed". A site covers its subdomains:
 # "medium.com" also matches "blog.medium.com".
 sites = []
-
-
-# --- Lock the guard's own settings -------------------------------------------
-
-# An agent that keeps getting blocked may try to remove the block instead of
-# working around it: editing the hook out of its settings, or deleting the
-# hook script. The lock closes that route. It is your choice, off by default.
-#
-# false: (default) agents may edit agent settings as usual, when you ask.
-# true:  agents can't change these, whether with edit tools or with shell
-#        writes, deletes or permission changes:
-#          .claude/settings.json and settings.local.json (in every project),
-#          .claude/hooks/, and .codex/config.toml.
-#        They can still read them. To change a setting yourself, edit the
-#        file by hand, or set this to false, make the change, and set it back.
-#
-# To lock more paths, use the table form instead:
-#   guard_lock = { enabled = true, paths = ["C:/Tools/siftfetch"] }
-#
-# Limits: Codex has no hook, so Codex agents aren't stopped by this. A script
-# that builds a path at runtime can slip past the shell check. For a lock
-# that holds against everything, also make the files read-only for your
-# account (see SETUP.md step 5).
-guard_lock = false

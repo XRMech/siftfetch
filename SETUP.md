@@ -163,9 +163,9 @@ settings as usual when you ask. To change a locked file, edit it yourself,
 or set the lock to `false`, make the change, and set it back.
 
 **Limits.** Codex has no hook, so the lock doesn't stop Codex agents. A
-script that builds a path at runtime can slip past the shell check. For a
-lock that holds against everything, also make the files read-only for your
-account. On Windows:
+script that builds a path at runtime can slip past the shell check. To make
+the files harder to change, also make them read-only for your account. That
+isn't immutable: anything running as your account can undo it. On Windows:
 `icacls "%USERPROFILE%\.claude\settings.json" /deny "%USERNAME%":(W)`. Undo it
 with `/remove:d`. While the file is read-only, Claude Code can't save its own
 changes to it either, such as `/config` choices.
