@@ -210,10 +210,13 @@ def test_lock_on_blocks_changes_and_allows_reads(policy_dir, value):
         assert run(payload, policy_dir) is None, payload
 
 
-def test_lock_extra_paths_and_explicit_off(policy_dir):
-    set_lock(policy_dir, {"enabled": True, "paths": ["C:\\Tools\\guard-engine"]})
-    assert run(call("Write", file_path="c:/tools/guard-engine/egress_policy.py",
+def test_lock_extra_paths_and_explicit_off(policy_dir, tmp_path):
+    engine = tmp_path / "Tools" / "guard-engine"
+    set_lock(policy_dir, {"enabled": True, "paths": [str(engine)]})
+    assert run(call("Write", file_path=f"{engine.as_posix().lower()}/egress_policy.py",
                     content="x"), policy_dir) == "deny"
+    assert run(call("Write", file_path=f"{tmp_path.as_posix()}/Tools/other.py",
+                    content="x"), policy_dir) is None
     set_lock(policy_dir, {"enabled": False})
     assert run(call("Edit", file_path=SETTINGS, old_string="a", new_string="b"),
                policy_dir) is None
@@ -255,7 +258,7 @@ MENTIONS_ONLY = [
     "grep -e .env -r docs/",
     "findstr /C:.env README.md",
     "git log --oneline | grep .env",
-    # Re-audit finding 6: an rg exclusion glob keeps .env out of the search.
+    # An rg exclusion glob keeps .env out of the search.
     "rg -g '!.env' KEY .",
     "rg -g!.env* KEY src/",
     "ls .e*",
@@ -299,7 +302,7 @@ ALWAYS_READS = [
     ("PowerShell", "Select-String -Path .env -Pattern KEY"),
     ("PowerShell", "sls KEY .env"),
     ("PowerShell", "findstr KEY .env"),
-    # Codex re-audit finding 6.
+    # Flag values attached to the flag, and more dotenv globs.
     ("Bash", "grep -eKEY .env"),
     ("Bash", "grep -f patterns.txt .env"),
     ("Bash", "grep -fpatterns.txt .env"),
@@ -348,6 +351,32 @@ def test_shell_cannot_touch_policy_dir(policy_dir):
     assert run(call("Bash", command=f"ls {moved}-old"), policy_dir) is None
     # A project that is merely named siftfetch is not the policy folder.
     assert run(call("Bash", command="cd ~/src/siftfetch && pytest"), policy_dir) is None
+
+
+def test_shell_cannot_reach_policy_dir_by_glob(policy_dir, tmp_path):
+    for command in ("cat ~/.sift*/identifiers.json", "cat ~/.s?ftfetch/x",
+                    "Get-Content ~/.[s]iftfetch/identifiers.json", "cat ~/.*/identifiers.json"):
+        assert run(call("Bash", command=command), policy_dir) == "deny", command
+    # The moved folder, reached by a glob that expands to it on disk.
+    parent = policy_dir.parent.as_posix()
+    assert run(call("Bash", command=f"cat {parent}/pol*/identifiers.json"), policy_dir) == "deny"
+    assert run(call("Bash", command=f"cat {parent}/*/identifiers.json"), policy_dir) == "deny"
+    for command in ("ls .*", "rm -rf build/*", "cat src/*.py", f"ls {parent}/other*"):
+        assert run(call("Bash", command=command), policy_dir) is None, command
+
+
+def test_edit_tools_cannot_change_policy_dir(policy_dir, tmp_path):
+    # Lock off: the policy folder is protected regardless, wherever it lives.
+    for tool in ("Edit", "Write"):
+        payload = call(tool, file_path=str(policy_dir / "exceptions.json"), content="{}",
+                       old_string="a", new_string="b")
+        assert run(payload, policy_dir) == "deny", tool
+    alias = tmp_path / "alias"
+    _link_dir(policy_dir, alias)
+    assert run(call("Write", file_path=str(alias / "exceptions.json"), content="{}"),
+               policy_dir) == "deny"
+    assert run(call("Write", file_path=str(tmp_path / "policy-notes.md"), content="x"),
+               policy_dir) is None
 
 
 # The lock resolves paths instead of matching text.
@@ -447,8 +476,7 @@ def test_engine_missing_fails_closed_for_locked_paths(policy_dir, tmp_path):
                     new_string="b"), policy_dir, src=broken) is None
 
 
-def test_lock_catches_reaudit_bypasses(policy_dir, tmp_path):
-    # Codex re-audit finding 3, each case as reported.
+def test_lock_catches_globs_called_paths_and_aliases(policy_dir, tmp_path):
     set_lock(policy_dir, True)
     home = _home(tmp_path)
     work = (tmp_path / "work").as_posix()
@@ -465,19 +493,75 @@ def test_lock_catches_reaudit_bypasses(policy_dir, tmp_path):
         assert run(_shell(tool, command, cwd), policy_dir) == "deny", command
 
 
+def _link_dir(target, link):
+    """A junction on Windows (no admin rights needed), a symlink elsewhere."""
+    if sys.platform == "win32":
+        import _winapi
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        os.symlink(target, link, target_is_directory=True)
+
+
 def test_lock_follows_junctions(policy_dir, tmp_path):
-    import _winapi
     set_lock(policy_dir, True)
     home = _home(tmp_path)
     alias = tmp_path / "innocent"
-    _winapi.CreateJunction(str(tmp_path / "home" / ".claude"), str(alias))
+    _link_dir(tmp_path / "home" / ".claude", alias)
     assert run(_shell("Bash", f"echo x > {alias.as_posix()}/settings.json", home),
                policy_dir) == "deny"
     assert run(_shell("Bash", f"rm -rf {alias.as_posix()}", home), policy_dir) == "deny"
+    for tool in ("Edit", "Write"):
+        payload = call(tool, file_path=f"{alias.as_posix()}/settings.json", content="{}",
+                       old_string="a", new_string="b")
+        assert run(dict(payload, cwd=home), policy_dir) == "deny", tool
+
+
+def test_lock_blocks_making_links_to_locked_paths(policy_dir, tmp_path):
+    set_lock(policy_dir, True)
+    home = _home(tmp_path)
+    work = (tmp_path / "work").as_posix()
+    for tool, command in [
+        ("PowerShell", f"cmd /c mklink /J {work}/j {home}/.claude"),
+        ("PowerShell", f"New-Item -ItemType Junction -Path {work}/j -Target {home}/.claude"),
+        ("Bash", f"ln -s {home}/.claude {work}/j"),
+        ("Bash", f"ln -sf {work}/evil.json {home}/.claude/settings.json"),
+    ]:
+        assert run(_shell(tool, command, work), policy_dir) == "deny", command
+    # Links that lead nowhere locked are fine.
+    assert run(_shell("Bash", f"ln -s {home}/build {work}/b", work), policy_dir) is None
+
+
+def test_lock_sees_other_spellings_of_a_locked_file(policy_dir, tmp_path):
+    set_lock(policy_dir, True)
+    home = _home(tmp_path)
+    for spelling in ("settings.json.", "settings.json ", "settings.json::$DATA",
+                     "settings.json:extra", "SETTINGS.JSON"):
+        path = f"{home}/.claude/{spelling}"
+        assert run(dict(call("Write", file_path=path, content="{}"), cwd=home),
+                   policy_dir) == "deny", spelling
+        assert run(_shell("PowerShell", f"Set-Content '{path}' x", home),
+                   policy_dir) == "deny", spelling
+
+
+def test_lock_covers_more_write_routes(policy_dir, tmp_path):
+    set_lock(policy_dir, True)
+    home = _home(tmp_path)
+    s = f"{home}/.claude/settings.json"
+    for tool, command in [
+        ("Bash", f"chmod 666 {s}"),
+        ("Bash", f"chmod -R u+w {home}/.claude"),
+        ("Bash", f"chown nobody {s}"),
+        ("Bash", f"dd if=/dev/null of={s}"),
+        ("Bash", f"git checkout -- {s}"),
+        ("Bash", f"git restore {s}"),
+        ("PowerShell", f"Set-ItemProperty {s} -Name IsReadOnly -Value $false"),
+    ]:
+        assert run(_shell(tool, command, home), policy_dir) == "deny", command
+    assert run(_shell("Bash", f"git diff {s}", home), policy_dir) is None
 
 
 def test_lock_allows_reading_copies_of_locked_files(policy_dir, tmp_path):
-    # Re-audit: copying a locked file out only reads it.
+    # Copying a locked file out only reads it.
     set_lock(policy_dir, True)
     home = _home(tmp_path)
     for command in ("cp ~/.claude/settings.json backup.json",

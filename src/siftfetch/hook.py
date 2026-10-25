@@ -45,22 +45,51 @@ _SHELL_NETWORK = re.compile(
 )
 
 # Shell commands may not touch the policy data (identifiers, grants, config).
-# Agents run as the owner, so this makes tampering visible, not impossible;
-# settings deny rules cover Edit/Write on the same directory. The engine code
-# is not matched here so agents can still run its tests.
+# Agents run as the owner, so this makes tampering visible, not impossible.
+# Edit tools are refused in the same folder, wherever it was moved; reading it
+# with the Read tool is left to the owner's settings deny rules. The engine
+# code is not matched here so agents can still run its tests.
 _POLICY_PATHS = re.compile(r"(?<![\w-])\.siftfetch(?![\w-])|SIFTFETCH_HOME", re.IGNORECASE)
 
 
-def _names_policy(command: str) -> bool:
+def _policy_home() -> str:
+    """The policy folder as a resolved, normalized path."""
+    moved = os.environ.get("SIFTFETCH_HOME", "").strip()
+    home = moved or os.path.join(os.path.expanduser("~"), ".siftfetch")
+    return _resolve(home, os.getcwd())
+
+
+def _names_policy(command: str, cwd: str) -> bool:
     """The command names the policy folder: the default one, the variable
-    that moves it, or the folder it was moved to."""
+    that moves it, the folder it was moved to, or a glob or link that leads
+    there."""
     if _POLICY_PATHS.search(command):
         return True
-    moved = os.environ.get("SIFTFETCH_HOME", "").strip().rstrip("\\/")
-    if not moved:
-        return False
     norm = lambda s: s.replace("\\", "/").lower()  # noqa: E731
-    return re.search(re.escape(norm(moved)) + r"(?![\w.-])", norm(command)) is not None
+    moved = os.environ.get("SIFTFETCH_HOME", "").strip().rstrip("\\/")
+    if moved and re.search(re.escape(norm(moved)) + r"(?![\w.-])", norm(command)):
+        return True
+    home = _policy_home()
+    names = {".siftfetch", home.rsplit("/", 1)[-1]}
+    for token in _TOKEN.findall(command):
+        token = token.strip(_QUOTES)
+        # A glob such as ~/.sift*/ names the folder without spelling it,
+        # whether or not that folder exists where this hook looks.
+        # A bare ".*" at the end (ls .*) is everyday use and is left alone.
+        parts = re.split(r"[\\/]", token)
+        if any(p.startswith(".") and any(c in p for c in "*?[")
+               and any(fnmatch.fnmatchcase(n, p.lower()) for n in names)
+               and (i < len(parts) - 1 or len(re.sub(r"[*?\[\]]", "", p)) > 2)
+               for i, p in enumerate(parts)):
+            return True
+        if any(c in token for c in "*?[/\\") and any(_within(p, home)
+                                                    for p in _candidates(token, cwd)):
+            return True
+    return False
+
+
+def _within(path: str, folder: str) -> bool:
+    return path == folder or path.startswith(folder + "/")
 
 # Shell access to dotenv files. Reading a file puts its contents in the model
 # context, which is itself a disclosure; settings Read() deny rules cover the
@@ -240,9 +269,11 @@ _SHELL_WRITE = re.compile(
     r"(?<![\d&>-])>{1,2}(?!&)"
     r"|(?<![\w-])(?:Set-Content|Add-Content|Out-File|Clear-Content|Copy-Item|Move-Item|"
     r"Remove-Item|Rename-Item|New-Item|Tee-Object|cp|mv|rm|del|erase|copy|move|ren|tee|"
-    r"icacls|attrib|takeown|truncate|install|"
+    r"icacls|cacls|attrib|takeown|truncate|install|chmod|chown|chgrp|ln|mklink|dd|"
+    r"Set-ItemProperty|Set-Acl|fsutil|"
     # PowerShell's built-in aliases for the same cmdlets.
-    r"sc|ac|clc|ni|ri|rni|mi|cpi|rd|rmdir|xcopy|robocopy)(?![\w-])"
+    r"sc|ac|clc|ni|ri|rni|mi|cpi|rd|rmdir|xcopy|robocopy|sp)(?![\w-])"
+    r"|(?<![\w-])git\s+(?:-C\s+\S+\s+)?(?:checkout|restore|reset|apply|am|rm|mv|stash|clean)(?![\w-])"
     r"|(?<![\w-])(?:sed|perl)\s+(?:-\w+\s+)*-i"
     r"|WriteAll\w+|write_text|write_bytes|json\.dump|\.write\(|open\([^)]*['\"][wax+]",
     re.IGNORECASE,
@@ -290,7 +321,14 @@ _REDIRECT_PREFIX = re.compile(r"^\d?>{1,2}")
 # the locked path too (rm -r ~/.claude, Move-Item ~/.claude, icacls ~/.claude).
 _TREE_VERBS = {"rm", "rmdir", "rd", "del", "erase", "remove-item", "ri", "mv", "move",
                "move-item", "mi", "rename-item", "ren", "rni", "icacls", "cacls", "attrib",
-               "takeown", "robocopy"}
+               "takeown", "robocopy", "chmod", "chown", "chgrp", "set-acl"}
+# A link to a locked path, or to a folder holding one, would let a later edit
+# reach it under another name, so every path in a link-making command counts.
+_MAKES_LINK = re.compile(
+    r"(?<![\w-])(?:mklink|ln)(?![\w-])|-ItemType\s+['\"]?(?:Junction|SymbolicLink|HardLink)"
+    r"|CreateJunction|os\.symlink|os\.link|symlink_to|hardlink_to",
+    re.IGNORECASE,
+)
 _ENV_REF = re.compile(r"\$env:(\w+)|\$\{(\w+)\}|\$(\w+)", re.IGNORECASE)
 
 
@@ -299,18 +337,34 @@ def _expand(token: str) -> str:
                          token)
     token = os.path.expanduser(os.path.expandvars(token))
     # Git Bash spells C:\ as /c/.
-    return re.sub(r"^/([a-zA-Z])(?=/|$)", r"\1:", token)
+    if sys.platform == "win32":
+        token = re.sub(r"^/([a-zA-Z])(?=/|$)", r"\1:", token)
+    return token
+
+
+def _canonical(path: str) -> str:
+    """Drop the spellings Windows treats as the same file: a trailing dot or
+    space on a name, and an NTFS stream suffix (``settings.json::$DATA``)."""
+    parts = path.split("/")
+    for i, part in enumerate(parts):
+        if i == 0 and re.fullmatch(r"[a-z]:", part):
+            continue
+        part = part.split(":", 1)[0]
+        parts[i] = part if part in (".", "..") else part.rstrip(". ")
+    return "/".join(parts)
 
 
 def _resolve(token: str, cwd: str) -> str:
     path = _expand(token.strip("'\""))
-    return re.sub(r"/{2,}", "/", os.path.normpath(os.path.join(cwd, path))
-                  .replace("\\", "/")).lower().rstrip("/")
+    # Device-path prefixes (\\?\C:\..., \\.\C:\...) name the same files.
+    path = re.sub(r"^[\\/]{2}[?.][\\/](?=[a-zA-Z]:)", "", path)
+    path = os.path.normpath(os.path.join(cwd, path)).replace("\\", "/")
+    return _canonical(re.sub(r"/{2,}", "/", path).lower()).rstrip("/")
 
 
 def _is_locked(path: str, locked: list[str]) -> str | None:
     for entry in locked:
-        if re.match(r"^[a-z]:/", entry):  # an owner-listed absolute path
+        if re.match(r"^(?:[a-z]:)?/", entry):  # an owner-listed absolute path
             if path == entry.rstrip("/") or path.startswith(entry.rstrip("/") + "/"):
                 return entry
         elif entry.endswith("/"):  # a locked folder, and everything in it
@@ -324,7 +378,7 @@ def _is_locked(path: str, locked: list[str]) -> str | None:
 def _is_ancestor(path: str, locked: list[str]) -> str | None:
     """A locked path that sits inside ``path``, if one exists on disk."""
     for entry in locked:
-        if re.match(r"^[a-z]:/", entry):
+        if re.match(r"^(?:[a-z]:)?/", entry):
             if entry.rstrip("/").startswith(path + "/"):
                 return entry
             continue
@@ -347,10 +401,12 @@ def _candidates(token: str, cwd: str) -> list[str]:
     path = _resolve(token, cwd)
     paths = [path]
     if any(c in token for c in "*?["):
-        paths += [p.replace("\\", "/").lower() for p in glob.glob(path)]
+        # PowerShell's * matches dot-named folders too.
+        paths += [_canonical(p.replace("\\", "/").lower())
+                  for p in glob.glob(path, include_hidden=True)]
     for p in list(paths):
         # Junctions and symlinks: compare where the path really leads too.
-        real = os.path.realpath(p).replace("\\", "/").lower()
+        real = _canonical(os.path.realpath(p).replace("\\", "/").lower())
         if real != p:
             paths.append(real)
     return paths
@@ -393,8 +449,12 @@ def _shell_locked(command: str, cwd: str, locked: list[str]) -> str | None:
         tokens = [_REDIRECT_PREFIX.sub("", t) for t in _TOKEN.findall(segment)]
         tokens = [t.split("=", 1)[-1] if t.startswith("-") else t for t in tokens]
         verb = _verb(tokens[0]) if tokens else ""
+        if verb == "dd":
+            tokens = [re.sub(r"^(?:if|of)=", "", t) for t in tokens]
         args = [t for t in tokens[1:] if t and not _is_switch(t)]
-        if verb in _COPY_VERBS or verb in _MOVE_VERBS:
+        if _MAKES_LINK.search(segment):
+            targets = [(t, True) for t in args]
+        elif verb in _COPY_VERBS or verb in _MOVE_VERBS:
             if not args:
                 continue
             *sources, dest = args
@@ -426,7 +486,9 @@ def _locked_target(tool: str, tool_input: dict, cwd: str) -> tuple[str | None, s
     if not locked:
         return None, None
     if tool in _EDIT_TOOLS:
-        return _is_locked(_resolve(text, cwd), locked), problem
+        # Edit tools write through links, so the real target is checked too.
+        hit = next((h for p in _candidates(text, cwd) if (h := _is_locked(p, locked))), None)
+        return hit, problem
     # A path inside an interpreter's code, or held in a shell variable, can't
     # be resolved as an argument; there the text itself is matched.
     normalized = re.sub(r"/{2,}", "/", text.replace("\\", "/").lower())
@@ -441,6 +503,10 @@ def _locked_target(tool: str, tool_input: dict, cwd: str) -> tuple[str | None, s
 _TAMPER = (
     "Blocked by privacy policy (policy_protected). Shell commands may not read or "
     "change the egress policy files; ask the owner to make policy changes."
+)
+_TAMPER_EDIT = (
+    "Blocked by privacy policy (policy_protected). Agents may not change the egress "
+    "policy files; ask the owner to make policy changes."
 )
 
 _MALFORMED = (
@@ -547,10 +613,16 @@ def main() -> int:
     if data.get("hook_event_name") == "PostToolUse":
         _label_chrome_read(tool, data.get("tool_response"))
         return 0
-    if tool in ("Bash", "PowerShell") and _names_policy(str(tool_input.get("command") or "")):
+    cwd = data.get("cwd") if isinstance(data.get("cwd"), str) else os.getcwd()
+    if tool in ("Bash", "PowerShell") and _names_policy(str(tool_input.get("command") or ""), cwd):
         _emit("deny", _TAMPER)
         return 0
-    cwd = data.get("cwd") if isinstance(data.get("cwd"), str) else os.getcwd()
+    if tool in _EDIT_TOOLS:
+        target = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
+        home = _policy_home()
+        if target and any(_within(p, home) for p in _candidates(target, cwd)):
+            _emit("deny", _TAMPER_EDIT)
+            return 0
     locked, problem = _locked_target(tool, tool_input, cwd)
     if locked:
         _emit("deny", _LOCK_UNKNOWN.format(path=locked, cause=problem) if problem
