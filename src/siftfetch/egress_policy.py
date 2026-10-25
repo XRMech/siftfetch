@@ -488,8 +488,20 @@ def _views(text: str) -> list[str]:
     unescaped = html.unescape(current)
     if unescaped != current:
         views.append(unescaped)
+        current = unescaped
+    # Zero-width and other format characters render as nothing, so a value
+    # split by one still reads as the value.
+    stripped = "".join(c for c in current if unicodedata.category(c) != "Cf")
+    if stripped != current:
+        views.append(stripped)
+    # A run may span path segments ("v2/<payload>"), so each slash-separated
+    # piece is tried too.
+    runs = set()
     for run in _B64_RUN.findall(current):
-        padded = run + "=" * (-len(run) % 4)
+        runs.add(run)
+        runs.update(p for p in run.split("/") if len(p) >= 16)
+    for run in runs:
+        padded = run.rstrip("=") + "=" * (-len(run.rstrip("=")) % 4)
         for decoder in (base64.b64decode, base64.urlsafe_b64decode):
             try:
                 out = decoder(padded).decode("utf-8")
@@ -514,7 +526,22 @@ def _identifiers_in(text: str, policy: _Policy) -> list[_Identifier]:
     return found
 
 
+def _plain_path(path: str) -> bool:
+    """False when the path the server acts on may differ from this text.
+
+    Clients and servers resolve ``.`` and ``..`` segments (also when
+    percent-encoded) and some decode ``%2f`` or treat ``\\`` as a slash, so
+    a grant's path prefix is only compared against a path with none of them.
+    """
+    decoded = unquote(path)
+    if "\\" in decoded or decoded.count("/") != path.count("/"):
+        return False
+    return not any(seg in (".", "..") for seg in decoded.split("/"))
+
+
 def _path_matches(prefix: str, path: str) -> bool:
+    if not _plain_path(path):
+        return False
     prefix = prefix.rstrip("/") or "/"
     if prefix == "/":
         return True
@@ -659,14 +686,16 @@ def _logged(decision: Decision, *, tool: str, op: str, host: str | None) -> Deci
     return decision
 
 
-def _guarded(fn, *, tool: str, op: str, host: str | None, size: int) -> Decision:
+def _guarded(fn, *, tool: str, op: str, host: str | None, size: int,
+             log: bool = True) -> Decision:
     if size > MAX_INPUT_BYTES:
-        return _logged(Decision("deny", "oversized_input"), tool=tool, op=op, host=host)
-    try:
-        decision = fn(_load_policy())
-    except Exception:
-        decision = Decision("deny", "policy_unavailable")
-    return _logged(decision, tool=tool, op=op, host=host)
+        decision = Decision("deny", "oversized_input")
+    else:
+        try:
+            decision = fn(_load_policy())
+        except Exception:
+            decision = Decision("deny", "policy_unavailable")
+    return _logged(decision, tool=tool, op=op, host=host) if log else decision
 
 
 def check_url(url: str, *, op: str = "fetch", tool: str = "siftfetch",
@@ -721,17 +750,18 @@ def check_search(query: str, *, tool: str = "siftfetch",
 
 
 def check_text(text: str, *, op: str = "api", tool: str, session_kind: str,
-               chrome: bool = False) -> Decision:
+               chrome: bool = False, log: bool = True) -> Decision:
     """Check free text (a shell command, a browser action) as one location.
 
     Grants never apply: free text cannot be parsed reliably enough to bind a
-    grant to one field at one origin.
+    grant to one field at one origin. ``log=False`` skips the decision log,
+    for checks of local files that are not outbound requests.
     """
     def run(policy: _Policy) -> Decision:
         return _decide([("text", text)], policy=policy, op=op, origin=None, path="/",
                        session_kind=session_kind, chrome=chrome)
 
-    return _guarded(run, tool=tool, op=op, host=None, size=len(text))
+    return _guarded(run, tool=tool, op=op, host=None, size=len(text), log=log)
 
 
 def _literal_private(host: str | None) -> bool:

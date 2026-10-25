@@ -53,6 +53,10 @@ GRANT = {"label": "business_email", "origin": "https://apply.example", "op": "fe
     f"https://api.example/{EMAIL}/profile",
     "https://api.example/x?p=(555)%20010-4477",
     "https://api.example/x?p=%2B1.555.010.4477",
+    "https://api.example/v2/" + base64.b64encode(EMAIL.encode()).decode().rstrip("="),
+    "https://api.example/a/" + base64.urlsafe_b64encode(EMAIL.encode()).decode() + "/b",
+    "https://api.example/x?c=pat.ex​ample@mailhost.test",  # zero-width space
+    "https://api.example/x?c=pat.example­@mailhost.test",  # soft hyphen
 ])
 def test_protected_value_denied_in_any_form(policy, url):
     d = ep.check_url(url)
@@ -90,6 +94,17 @@ def test_grant_allows_only_its_exact_occurrence(policy):
     assert ep.check_url(f"https://other.example/apply?email={BIZ}").action == "deny"
 
 
+@pytest.mark.parametrize("path", [
+    "/apply/../outside", "/apply/./x", "/apply/%2e%2e/outside", "/apply/%2E./outside",
+    "/apply%2f..%2foutside", "/apply\\..\\outside", "/apply/x/..",
+])
+def test_grant_ignores_paths_the_server_may_resolve_elsewhere(policy, path):
+    # The client or server resolves dot segments and may decode %2f, so the
+    # path the grant sees is not the path that is fetched.
+    _grants(policy, GRANT)
+    assert ep.check_url(f"https://apply.example{path}?email={BIZ}").action == "deny"
+
+
 def test_grant_does_not_cover_a_second_value(policy):
     _grants(policy, GRANT)
     d = ep.check_url(f"https://apply.example/apply?email={BIZ}&tel=5550104477")
@@ -101,9 +116,31 @@ def test_grant_with_bad_or_past_expiry_is_ignored(policy):
     assert ep.check_url(f"https://apply.example/apply?email={BIZ}").action == "deny"
 
 
+@pytest.mark.parametrize("config", ["config", "config.locked-down", "config.relaxed"])
+def test_shipped_examples_load(tmp_path, monkeypatch, config):
+    from pathlib import Path
+    examples = Path(__file__).resolve().parents[1] / "examples"
+    monkeypatch.setenv("SIFTFETCH_HOME", str(tmp_path))
+    monkeypatch.setattr(ep, "_cached", None)
+    for name, source in (("identifiers", "identifiers"), ("exceptions", "exceptions"),
+                         ("config", config)):
+        (tmp_path / f"{name}.json").write_bytes((examples / f"{source}.example.json").read_bytes())
+    assert ep.check_url("https://docs.example/page").action == "allow"
+    assert ep.guard_lock_state()[1] is None
+    assert ep.secret_file_mode() in ep.SECRET_FILE_MODES
+
+
+def test_check_text_can_skip_the_decision_log(policy):
+    log = policy / "egress-decisions.jsonl"
+    d = ep.check_text(f"mail {EMAIL}", tool="lint", session_kind="unattended", log=False)
+    assert d.reason_code == "protected_value" and not log.exists()
+    ep.check_text("plain", tool="lint", session_kind="unattended")
+    assert log.exists()
+
+
 def test_identifier_patterns_stay_linear_on_long_whitespace(policy):
-    # Codex: overlapping whitespace in the email pattern made a search over
-    # the local part plus many spaces quadratic (0.9 s at 16,000 spaces).
+    # Overlapping whitespace in the email pattern would make a search over
+    # the local part plus many spaces quadratic.
     import time
     start = time.perf_counter()
     for text in ("pat.example" + " " * 200_000 + "x", ("5" + " " * 5_000) * 40):
@@ -284,7 +321,7 @@ def test_log_keeps_plain_host_when_nothing_matched(policy):
 
 
 def test_log_hashes_host_on_early_rejections(policy):
-    # Re-audit finding 9: ambiguous_request can be decided before value
+    # ambiguous_request can be decided before value
     # matching (userinfo here), so the host is scanned on its own.
     decision = ep.check_url("https://u@patexample99.collect.example/")
     assert decision.action != "allow"
