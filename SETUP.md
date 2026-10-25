@@ -409,4 +409,6 @@ Restart your agent so it loads the hook and server, then ask it:
 - TOML policy files in place of JSON;
 - a domain block list;
 - a master `enabled` switch;
-- the hook registered and tested for Codex.
+- the hook registered and tested for Codex;
+- a PyPI release, so setup starts with `pip install siftfetch` instead of a
+  clone (see [RELEASING.md](RELEASING.md)).

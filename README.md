@@ -126,7 +126,7 @@ Read this before relying on it.
 | Local egress proxy for real-browser reads | Built |
 | Domain blocklist | Planned |
 | Master `enabled` switch | Planned |
-| Installable package (hook, MCP server, tests) | Built. Installs from source. |
+| Installable package (hook, MCP server, tests) | Built. Installs from source; a PyPI release is planned (see [RELEASING.md](RELEASING.md)). |
 | TOML policy files | Planned. Today the engine reads JSON (`identifiers.json`, `exceptions.json`, `config.json`). |
 | `siftfetch init` / `doctor` / `install` | Planned |
 | `source` extraction level | Planned |
