@@ -23,9 +23,9 @@ clicks, types or submits, so text on a page cannot drive it anywhere.
   ask for a visible window on one read when the owner wants to watch.
 - **Rate-limited** to ``max_per_minute`` page reads.
 
-Headless browsers were tried first and are refused by the same walls. On
-2026-10-24, headless Edge got through none of 9 walled sites; a real Edge
-window got through 5 of 6.
+Headless browsers are refused by the same walls: in the author's tests,
+headless Edge got through none of 9 walled sites, and a real Edge window got
+through 5 of 6.
 """
 
 from __future__ import annotations
@@ -110,8 +110,8 @@ def read_page(url: str, window: str | None = None) -> BrowserPage:
     """Load ``url`` in a real browser and return its HTML once past any challenge.
 
     ``window`` overrides the owner's default for this read: an agent passes
-    ``"visible"`` when the owner wants to watch. Measured on Windows 11
-    (2026-10-24): in every mode, keyboard focus stayed in the window the
+    ``"visible"`` when the owner wants to watch. On Windows 11, in every
+    mode, keyboard focus stays in the window the
     owner was using, because Windows does not let a background process take
     the foreground.
 

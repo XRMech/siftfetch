@@ -3,10 +3,10 @@
 Nothing is deleted. Suspicious invisible controls are replaced by visible
 escapes (``⟦U+202E⟧``), text addressed to AI agents is wrapped in
 ``⟦flagged:<category>⟧ ... ⟦/flagged⟧``, and every page gets a risk grade and
-an untrusted-content envelope. The grade drives the ingestion gate: ``high``
-and ``high-candidate`` pages are quarantined, never indexed.
+an untrusted-content envelope. The grade decides what may be kept: ``high``
+and ``high-candidate`` pages are quarantined, never saved.
 
-Grading (plan §8.4), patterns in ``injection_patterns.json``:
+Grading, with patterns in ``injection_patterns.json``:
 
 - high: ``exfil`` or ``link_exfil`` in visible text; ``override`` and
   ``agent_addressed`` within one window; any hit that only appears once

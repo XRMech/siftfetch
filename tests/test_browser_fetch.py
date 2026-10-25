@@ -127,7 +127,7 @@ def test_page_under_cap_is_read(config, monkeypatch):
 
 
 def test_page_that_grows_after_measuring_is_refused(config, monkeypatch):
-    # Re-audit finding 7: a page whose scripts grow it after the first
+    # A page whose scripts grow it after the first
     # measurement is caught on the bytes actually copied out.
     config(mode="on-wall")
     monkeypatch.setattr(bf, "_MAX_HTML_CHARS", 1_000)

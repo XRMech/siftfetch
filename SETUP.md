@@ -57,7 +57,9 @@ Create it and lock it to your account:
     mkdir -m 700 ~/.siftfetch
 
 Copy the three examples from [`examples/`](examples/) into it, without the
-`.example` part: `identifiers.json`, `exceptions.json`, `config.json`.
+`.example` part: `identifiers.json`, `exceptions.json`, `config.json`. For
+`config.json` you can start from the locked-down or relaxed example instead
+(see [Choosing how strict](#choosing-how-strict)).
 
 ## 3. Enter your protected details **[owner only]**
 
@@ -129,7 +131,7 @@ In `~/.claude/settings.json`, merge these into what is already there:
     "PreToolUse": [
       {
         "matcher": "WebFetch|WebSearch|Bash|PowerShell|mcp__claude-in-chrome__.*|mcp__claude_ai_Google_Drive__share_file",
-        "hooks": [{"type": "command", "command": "PY -m siftfetch.hook", "onFailure": "block"}]
+        "hooks": [{"type": "command", "command": "PY -m siftfetch.hook"}]
       },
       {
         "matcher": "Edit|Write|MultiEdit|NotebookEdit",
@@ -148,17 +150,23 @@ In `~/.claude/settings.json`, merge these into what is already there:
       "Read(~/.siftfetch/**)", "Edit(~/.siftfetch/**)",
       "Read(**/.env)", "Read(**/.env.*)", "Read(//**/.env)", "Read(//**/.env.*)"
     ]
-  },
-  "mcpServers": {
-    "siftfetch": {"command": "PY", "args": ["-m", "siftfetch.server"]}
   }
 }
 ```
 
-- **`onFailure: block`:** if the hook itself breaks, web calls stop instead
-  of passing unchecked.
-- **The Edit/Write hook** enforces the guard lock (step 5) and the `.env`
-  rules on file tools.
+Then register the server for all your projects (Claude Code keeps MCP
+servers in `~/.claude.json`, not in `settings.json`):
+
+    claude mcp add --scope user siftfetch -- PY -m siftfetch.server
+
+- **If the hook can't run:** when the hook starts but the policy can't load,
+  it blocks every web call (`policy_unavailable`). But if `PY` itself can't
+  start, or can't import `siftfetch` at all, Claude Code treats that as a
+  failed hook and lets the call through. Run the check in step 8 after every
+  update or move of the venv.
+- **The Edit/Write hook** enforces the guard lock (step 5) and keeps edit
+  tools out of the policy folder, wherever it is. Keeping file tools away
+  from `.env` contents is the deny rules' job.
 - **The PostToolUse hook** labels page text read through Claude in Chrome as
   untrusted web content.
 - **Deny rules:** both `**/` and `//**/` forms, because `**/` alone covers
@@ -192,7 +200,11 @@ register it, remember that Codex silently skips a hook it hasn't trusted.
 ## 5. Review your settings **[owner only, optional]**
 
 Every setting lives in `~/.siftfetch/config.json`, and every one is
-optional; a missing or invalid value falls back to its default.
+optional; a missing value takes its default. An invalid `secret_file_mode`
+or `browser_fetch` value falls back to the strict choice. A `config.json`
+that doesn't parse, or a malformed `local_endpoints` or `cookie_origins`
+entry, stops the policy loading, so every web call is blocked with
+`policy_unavailable` until you fix it.
 [`examples/config.example.json`](examples/config.example.json) shows them
 all. Agents can't read or change this file.
 
@@ -210,11 +222,36 @@ all. Agents can't read or change this file.
 | `browser_fetch.sites` | `[]` | Sites for `always-for-listed`. A site covers its subdomains. |
 | `guard_lock` | `false` | Stops agents from changing the guard's own settings (below). |
 
+### Choosing how strict
+
+You pick the level. Start from the default and tighten or loosen one
+setting at a time if the guard blocks work your agents need, or lets
+through more than you want. Two complete examples sit beside the default:
+[`config.locked-down.example.json`](examples/config.locked-down.example.json)
+and [`config.relaxed.example.json`](examples/config.relaxed.example.json).
+
+| Control | Tightest | Default | Loosest |
+|---|---|---|---|
+| Reading `.env` through the shell | `secret_file_mode: "strict"` | `strict` | `"standard"`, or `"off"`; also drop the `Read(**/.env)` deny rules to let file tools read them |
+| Your logins | `cookie_origins: []` | none listed | list the sites; `cookies_attended_only: false` lets unattended runs use them too |
+| Local services | `local_endpoints: []` | none | list each host and port agents may reach |
+| Guard's own settings | `guard_lock` on, plus your install folder in `paths`, plus the read-only step below | off | off |
+| Real-browser reads | `browser_fetch.mode: "off"` | off | `"on-wall"` or `"always-for-listed"` |
+| A value that must reach one site | no grants | no grants | a grant in `exceptions.json`, scoped to one site, field and date |
+| How each protected value is treated | `class: "exact"` | as you set it | `"soft"` (allowed in attended sessions after asking), plus `public_search: true` for search queries |
+| Native web tools | deny `WebFetch` and `WebSearch` so every page goes through SiftFetch | allowed, checked by the hook | allowed |
+
+These stay on at every level, because turning them off would turn off the
+guard itself: checking outbound requests for your protected values,
+refusing private addresses, and keeping agents out of the policy folder.
+To stop the guard altogether, remove its hook entries (see
+[Updating, pausing, removing](#updating-pausing-removing)).
+
 Environment variables:
 
 | Variable | What it does |
 |---|---|
-| `SIFTFETCH_HOME` | Moves the policy folder. The hook also protects the new path. |
+| `SIFTFETCH_HOME` | Moves the policy folder. The hook protects the new path from shell commands and edit tools; change the `Read(~/.siftfetch/**)` deny rule to the new path too. |
 | `SIFTFETCH_DATA` | Moves the data folder (step 7). |
 | `SIFTFETCH_CONTACT_ALIAS` | The contact alias; wins over `config.json`. |
 | `AGENT_HEADLESS=1` | Marks the session as unattended. |
@@ -246,7 +283,9 @@ deleting the hook script. With `"guard_lock": true`:
 - paths are resolved, not matched as text: `cd ~/.claude && rm
   settings.json` is caught, and so are relative paths and `..`;
 - deleting, moving or changing permissions on a parent folder (`rm -r
-  ~/.claude`) counts as changing what's inside it;
+  ~/.claude`) counts as changing what's inside it, and so does making a
+  link or junction to it; edits through an existing link are checked
+  against where the link leads;
 - reading them stays allowed;
 - the lock switch itself sits in the folder agents can't touch, so they
   can't turn it off;
@@ -281,8 +320,11 @@ value, at one origin, for one kind of request, in one spot, until a date:
 ```
 
 `location` is `host`, `path`, `query` or `param:<name>`. `expires` must be
-an RFC 3339 time with an offset. A grant with a missing or bad field is
-ignored, never widened.
+an RFC 3339 time with an offset. A grant with a bad or missing `expires`
+is ignored, never widened; one missing another field stops the policy
+loading, which blocks every web call until it is fixed. A grant never
+applies to a path holding `.` or `..` segments, `%2f` or `\`, since the
+server may resolve those to a path outside `path_prefix`.
 
 ## 6. Add the rules to your agent instructions **[agent ok, shows the text first]**
 
@@ -352,7 +394,8 @@ Restart your agent so it loads the hook and server, then ask it:
 
 | Symptom | Cause |
 |---|---|
-| Every web call is blocked with `policy_unavailable` | `identifiers.json` is missing or doesn't parse, or the hook's Python can't import `siftfetch`. |
+| Every web call is blocked with `policy_unavailable` | `identifiers.json` is missing, or a policy file doesn't parse or lacks a required field. |
+| Nothing is ever blocked, even step 8's canary | The hook isn't running: check the `PY` path in `settings.json` and that `PY -m siftfetch.hook` starts. |
 | An API rejects requests with no contact | Set `contact_alias`, and make sure the rules text gives it literally. |
 | The agent says it can't read `.env` | Working as intended. It should read `.env.example` for key names, or ask you. |
 | A harmless command is blocked | Report it with the exact command. False positives are bugs: open an issue on the repo. |

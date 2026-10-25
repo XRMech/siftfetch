@@ -173,8 +173,8 @@ def test_browser_never_resolves_names_itself(probe, monkeypatch, tmp_path):
     types = {v: k for k, v in events["constants"]["logEventTypes"].items()}
     # Chromium still asks its resolver, but a lookup that may touch the
     # network runs a system, DNS, secure-DNS or mDNS task (HostResolver task
-    # types 0-3). Measured 2026-10-24, Edge with this proxy: lookups of the
-    # name run only cache and hosts-file tasks [4, 9], then fail locally.
+    # types 0-3). With this proxy, lookups of the name should run only cache
+    # and hosts-file tasks, then fail locally.
     network_tasks = {0, 1, 2, 3}
     pending: dict[int, bool] = {}
     leaks = []

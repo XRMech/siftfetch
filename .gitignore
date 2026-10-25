@@ -15,6 +15,7 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+.pytest_cache/
 
 # Local test and run output
 runs/

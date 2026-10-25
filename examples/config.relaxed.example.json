@@ -1,0 +1,15 @@
+{
+  "contact_alias": "your-alias@your-mail-provider.example",
+  "secret_file_mode": "standard",
+  "cookie_origins": ["https://github.com"],
+  "cookies_attended_only": false,
+  "local_endpoints": [{"scheme": "http", "host": "127.0.0.1", "port": 8080}],
+  "guard_lock": false,
+  "browser_fetch": {
+    "mode": "on-wall",
+    "window": "minimized",
+    "browser": "msedge",
+    "max_per_minute": 12,
+    "sites": []
+  }
+}

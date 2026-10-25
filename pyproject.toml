@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -13,11 +13,13 @@ requires-python = ">=3.11"
 authors = [{ name = "Clinton Campbell" }]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Operating System :: OS Independent",
+    "Operating System :: Microsoft :: Windows",
     "Topic :: Security",
 ]
 dependencies = [
     "httpx>=0.27",
+    "httpcore>=1.0",
+    "anyio>=4.0",
     "beautifulsoup4>=4.12",
     "lxml>=6.1",
     "readability-lxml>=0.8.1",

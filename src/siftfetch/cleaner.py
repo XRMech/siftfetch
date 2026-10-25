@@ -193,8 +193,8 @@ def _doi_metadata(parsed) -> list[str]:
 
 # Official APIs for sites whose pages block automated fetches. Used only after
 # a fetch hits a bot wall; every response is combined, so a question comes back
-# with its answers. Each was verified 2026-10-24 while the page itself
-# returned 403. The contact alias goes where the API asks for an email --
+# with its answers. Each answered while the site's page itself returned 403
+# to automated fetches. The contact alias goes where the API asks for an email --
 # never a protected value.
 _API_ADAPTERS = {
     "stackoverflow.com": _stack_exchange,
