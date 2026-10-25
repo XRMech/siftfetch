@@ -19,6 +19,8 @@ import json
 import os
 import random
 import re
+import secrets
+import stat
 import string
 import sys
 from datetime import datetime, timezone
@@ -58,17 +60,54 @@ def _safe_name(name: str) -> str:
     return "/".join([*folders, stem + ".md"])
 
 
+def is_link(path: Path) -> bool:
+    """A symlink, junction or other reparse point (False when absent)."""
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        return False
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    return bool(getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _safe_folder(base: Path, rel: str) -> Path:
+    """Create ``base/rel`` and refuse it if any step below ``base`` is a link.
+
+    A link planted in the data folder would send a write somewhere else.
+    """
+    folder = base
+    for part in Path(rel).parts:
+        folder = folder / part
+        if is_link(folder):
+            raise SaveError(f"{folder} is a link or junction; nothing was written")
+        folder.mkdir(exist_ok=True)
+    return folder
+
+
+def _write_new(path: Path, text: str) -> bool:
+    """Create the file; False if it already exists. Never follows a link."""
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0)
+    try:
+        fd = os.open(path, flags | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(text.encode("utf-8"))
+    return True
+
+
 def quarantine(content: str, url: str, title: str, scan: dict, tool: str) -> dict:
     """Hold one page for owner review. The cleaned text is kept intact."""
-    qdir = data_dir() / "quarantine"
-    qdir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-    path = qdir / f"{stamp}-{suffix}_{_slug(url)}.json"
     record = {"status": "quarantined", "quarantined_at": _now(), "tool": tool,
               "url": url, "title": title, **scan, "content": content}
     try:
-        path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+        data_dir().mkdir(parents=True, exist_ok=True)
+        path = _safe_folder(data_dir(), "quarantine") / f"{stamp}-{suffix}_{_slug(url)}.json"
+        if not _write_new(path, json.dumps(record, indent=2, ensure_ascii=False)):
+            raise SaveError(f"quarantine name already taken: {path.name}")
     except OSError as exc:
         raise SaveError(f"quarantine write failed: {exc}") from exc
     return {"status": "quarantined", "path": str(path), "risk": scan.get("risk")}
@@ -78,13 +117,29 @@ def save(content: str, url: str, name: str, scan: dict, overwrite: bool = False)
     """Save a page that passed the grade, and record it in the ledger."""
     base = data_dir()
     rel = _safe_name(name)
-    path = base / "saved" / rel
-    if path.exists() and not overwrite:
-        return {"status": "exists", "path": str(path)}
-    path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        path.write_text(content, encoding="utf-8")
-        with (base / "saved-ledger.jsonl").open("a", encoding="utf-8") as fh:
+        base.mkdir(parents=True, exist_ok=True)
+        folder = _safe_folder(base, str(Path("saved", rel).parent))
+        path = folder / Path(rel).name
+        if is_link(path):
+            raise SaveError(f"{path} is a link or junction; nothing was written")
+        if overwrite:
+            # Written beside the target, then swapped in: replacing a path
+            # replaces the name, never a file a link points to.
+            part = folder / f".part-{secrets.token_hex(8)}"
+            if not _write_new(part, content):
+                raise SaveError("temporary file name collided; try again")
+            try:
+                os.replace(part, path)
+            except OSError:
+                part.unlink(missing_ok=True)
+                raise
+        elif not _write_new(path, content):
+            return {"status": "exists", "path": str(path)}
+        ledger = base / "saved-ledger.jsonl"
+        if is_link(ledger):
+            raise SaveError(f"{ledger} is a link or junction; the save was not recorded")
+        with ledger.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps({"path": rel, "url": url, "saved_at": _now(),
                                  "provenance": "untrusted-web", **scan}) + "\n")
     except OSError as exc:

@@ -245,7 +245,8 @@ async def fetch_url(
 
 @mcp.tool()
 async def search_web(query: str, max_results: int = 5) -> list[dict]:
-    """Search the web (DuckDuckGo) after the privacy policy approves the query.
+    """Search the web (DDGS: DuckDuckGo and other engines) after the privacy
+    policy approves the query.
 
     Titles and snippets are escaped and graded. Use this to find URLs, then
     fetch_url to read them. Supports the site: operator.
@@ -291,8 +292,8 @@ async def download_to_staging(url: str, expect: str, max_bytes: int = 50_000_000
 
 @mcp.tool()
 async def list_sessions() -> list[dict]:
-    """List the browser cookie jars (Chrome, Edge) logins could come from."""
-    return await anyio.to_thread.run_sync(list_available_sessions)
+    """Say whether browser logins (Chrome, Edge) are usable here, and for which origins."""
+    return await anyio.to_thread.run_sync(lambda: list_available_sessions(session_kind()))
 
 
 def main() -> None:

@@ -406,7 +406,7 @@ def test_each_content_encoding_decodes_whole(server, coding):
 
 @pytest.mark.parametrize("coding", ["gzip", "br"])
 def test_compression_bomb_never_expands_past_a_step(server, monkeypatch, coding):
-    # Re-audit: httpx decoded a whole network chunk before the cap saw it;
+    # httpx would decode a whole network chunk before the cap saw it, and
     # 16 KB of compressed zeros expands to megabytes in one go.
     import tracemalloc
     if coding == "br" and fetcher._brotli is None:
@@ -423,8 +423,34 @@ def test_compression_bomb_never_expands_past_a_step(server, monkeypatch, coding)
     assert peak < 6_000_000, peak
 
 
+def test_download_bomb_never_expands_past_a_step(server, tmp_path):
+    import tracemalloc
+    from siftfetch.downloader import DownloadRejected, download_to_staging
+    _Handler.files["/bomb3"] = (_encoded("gzip", bytes(60_000_000)), "text/plain", "gzip")
+    tracemalloc.start()
+    try:
+        with pytest.raises(DownloadRejected, match="too_large"):
+            download_to_staging(server + "/bomb3", tmp_path / "stage", "text",
+                                max_bytes=1_000_000)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 6_000_000, peak
+
+
+def test_download_stops_at_deadline_even_when_headers_dribble(server, tmp_path, monkeypatch):
+    from siftfetch import downloader
+    from siftfetch.downloader import DownloadRejected, download_to_staging
+    monkeypatch.setattr(downloader, "HARD_MAX_SECONDS", 0.5)
+    for path in ("/slow-headers", "/drip"):
+        start = time.monotonic()
+        with pytest.raises(DownloadRejected, match="timeout"):
+            download_to_staging(server + path, tmp_path / "stage", "text")
+        assert time.monotonic() - start < 5, path
+
+
 def test_concatenated_gzip_members_all_decode_and_end(server, monkeypatch):
-    # Codex: a first member past one step looped on empty chunks forever.
+    # A first member longer than one step must not loop on empty chunks.
     import gzip
     monkeypatch.setattr(fetcher, "_TOTAL_SECONDS", 10.0)
     first = b"a" * (fetcher._DECODE_STEP + 1)
@@ -435,7 +461,7 @@ def test_concatenated_gzip_members_all_decode_and_end(server, monkeypatch):
 
 def test_raw_deflate_that_looks_like_zlib_still_decodes(server):
     import zlib
-    raw = bytes.fromhex("780100feff41010000ffff")  # a raw stored block, per Codex
+    raw = bytes.fromhex("780100feff41010000ffff")  # a raw stored block
     expected = zlib.decompressobj(-zlib.MAX_WBITS).decompress(raw)
     _Handler.files["/rawdef"] = (raw, "text/html", "deflate")
     assert fetcher.fetch(server + "/rawdef").content == expected
@@ -502,7 +528,7 @@ def test_approved_alias_in_user_agent_passes(server, monkeypatch):
 
 
 def test_dribbled_headers_stop_at_deadline(server, monkeypatch):
-    # Re-audit finding 7: the deadline covers the header phase too.
+    # The deadline covers the header phase too.
     monkeypatch.setattr(fetcher, "_TOTAL_SECONDS", 0.5)
     start = time.monotonic()
     with pytest.raises(fetcher.FetchBudgetExceeded):
@@ -511,7 +537,7 @@ def test_dribbled_headers_stop_at_deadline(server, monkeypatch):
 
 
 def test_error_status_body_is_readable(server):
-    # Re-audit finding 8: bot-wall recovery reads the body of a 403.
+    # Bot-wall recovery reads the body of a 403.
     with pytest.raises(httpx.HTTPStatusError) as err:
         fetcher.fetch(server + "/wall")
     assert err.value.response.status_code == 403

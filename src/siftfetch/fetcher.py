@@ -37,9 +37,9 @@ def _user_agent() -> str:
     """An honest automated-client identity, with the owner's contact alias.
 
     A browser string on a non-browser connection is what bot walls look for:
-    Wikipedia rejects it outright and accepts an identified client. A 30-site
-    A/B on 2026-10-24 found no site that served the browser string and refused
-    this one. The alias is the owner's approved stand-in, never a protected
+    Wikipedia rejects it outright and accepts an identified client. In a
+    30-site comparison, no site served the browser string and refused this
+    one. The alias is the owner's approved stand-in, never a protected
     value.
     """
     alias = egress_policy.contact_alias()
@@ -477,29 +477,25 @@ def checked_response(url: str, *, browser: str = "none", timeout: float = _TIMEO
     raise httpx.TooManyRedirects(f"more than {_MAX_REDIRECTS} redirects", request=resp.request)
 
 
-def list_available_sessions() -> list[dict]:
-    """List available browser cookie jars.
+def list_available_sessions(session_kind: str = "unattended") -> list[dict]:
+    """Whether logins could be used for this caller, and for which origins.
 
-    Returns a list of dicts with browser name and status.
+    Never opens a cookie store: reading one decrypts every session in it,
+    and the stores are read only for a fetch to an owner-listed origin.
     """
-    results = []
     try:
-        import browser_cookie3 as bc3
+        import browser_cookie3  # noqa: F401
     except ImportError:
         return [{"browser": "none", "status": "browser_cookie3 not installed"}]
-
-    for name, loader in [("chrome", bc3.chrome), ("edge", bc3.edge)]:
-        try:
-            jar = loader()
-            count = sum(1 for _ in jar)
-            results.append({
-                "browser": name,
-                "status": "available",
-                "cookie_count": count,
-            })
-        except Exception as exc:
-            results.append({
-                "browser": name,
-                "status": f"unavailable: {exc}",
-            })
-    return results
+    try:
+        origins = sorted(egress_policy._load_policy().cookie_origins)
+    except Exception:
+        return [{"browser": "none", "status": "policy unavailable"}]
+    if not origins:
+        status = "no login origins listed by the owner"
+    elif not egress_policy.login_cookies_allowed(session_kind):
+        status = "logins are off for unattended sessions"
+    else:
+        return [{"browser": name, "status": "usable for the listed origins", "origins": origins}
+                for name in ("chrome", "edge")]
+    return [{"browser": name, "status": status} for name in ("chrome", "edge")]

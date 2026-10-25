@@ -10,14 +10,15 @@ import hashlib
 import json
 import os
 import secrets
-import stat
 import time
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 
+import httpx
 import pyexpat
 
-from siftfetch.fetcher import checked_response
+from siftfetch.fetcher import _decoded, checked_response
+from siftfetch.saving import is_link
 
 # Callers may lower these, never raise them.
 HARD_MAX_BYTES = 50_000_000
@@ -42,22 +43,12 @@ class DownloadRejected(ValueError):
         self.reason = reason
 
 
-def _is_link_or_reparse(path: Path) -> bool:
-    try:
-        st = path.lstat()
-    except FileNotFoundError:
-        return False
-    if stat.S_ISLNK(st.st_mode):
-        return True
-    return bool(getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
-
-
 def _safe_dir(staging_dir: Path) -> Path:
     """The downloads dir, refusing any symlink or junction on the way to it."""
     downloads = staging_dir / "downloads"
     downloads.mkdir(parents=True, exist_ok=True)
     for path in (downloads, staging_dir):
-        if _is_link_or_reparse(path):
+        if is_link(path):
             raise DownloadRejected("unsafe_staging", f"{path.name} is a link or junction.")
     return downloads
 
@@ -119,19 +110,28 @@ def download_to_staging(url: str, staging_dir: Path, expect: str,
     fd = os.open(part, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o600)
     digest = hashlib.sha256()
     size = 0
+    timeout = DownloadRejected("timeout", f"Took longer than {HARD_MAX_SECONDS:g}s.")
     try:
         with os.fdopen(fd, "wb") as out:
-            with checked_response(url, browser=browser, stream=True) as resp:
-                content_type = resp.headers.get("content-type", "")
-                # iter_bytes yields decoded bytes, so gzip bombs hit the limit too.
-                for chunk in resp.iter_bytes():
-                    size += len(chunk)
-                    if size > limit:
-                        raise DownloadRejected("too_large", f"More than {limit} bytes.")
-                    if time.monotonic() > deadline:
-                        raise DownloadRejected("timeout", f"Took longer than {HARD_MAX_SECONDS:.0f}s.")
-                    digest.update(chunk)
-                    out.write(chunk)
+            try:
+                with checked_response(url, browser=browser, stream=True,
+                                      deadline=deadline) as resp:
+                    content_type = resp.headers.get("content-type", "")
+                    # Decoded in bounded steps, so a compression bomb hits the
+                    # limit before it can fill memory.
+                    for chunk in _decoded(resp):
+                        size += len(chunk)
+                        if size > limit:
+                            raise DownloadRejected("too_large", f"More than {limit} bytes.")
+                        if time.monotonic() > deadline:
+                            raise timeout
+                        digest.update(chunk)
+                        out.write(chunk)
+            except (httpx.TransportError, httpx.StreamError) as exc:
+                # The deadline watchdog ends a stalled read by closing the client.
+                if time.monotonic() >= deadline:
+                    raise timeout from exc
+                raise
         _validate(expect, part.read_bytes(), content_type)
         sha = digest.hexdigest()
         final = downloads / f"{sha[:16]}.{_EXTENSIONS[expect]}"
