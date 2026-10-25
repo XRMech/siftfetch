@@ -27,7 +27,7 @@ You may run every **[agent ok]** step for the owner. Rules:
 
 ## 1. Install **[agent ok]**
 
-Requires Python 3.11 or newer. Works on Windows, macOS and Linux.
+Requires Python 3.11 or newer. Tested on Windows only. Linux and macOS support is written but untested; CI will run it there once the repository is published.
 
     git clone https://github.com/XRMech/siftfetch
     cd siftfetch
