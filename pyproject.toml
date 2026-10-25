@@ -8,9 +8,9 @@ version = "0.1.0"
 description = "Guardrails for AI coding agents that use the web: what they send, what they open, and what they see."
 readme = "README.md"
 license = "Apache-2.0"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.11"
-authors = [{ name = "XRMech" }]
+authors = [{ name = "Clinton Campbell" }]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",

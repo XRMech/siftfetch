@@ -151,4 +151,4 @@ guide marks the one step only you should do: typing in your personal details.
 
 ## License
 
-Apache-2.0.
+Apache-2.0. Copyright 2026 Clinton Campbell (XRMech Solutions); see [LICENSE](LICENSE) and [NOTICE](NOTICE).
