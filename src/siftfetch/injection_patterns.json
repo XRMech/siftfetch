@@ -1,0 +1,29 @@
+{
+  "version": "inj-3",
+  "window": 200,
+  "categories": {
+    "override": [
+      "ignore\\s+(?:all|any|previous|prior|above|the\\s+above)\\s+(?:instructions|rules|prompts|directions)",
+      "disregard\\s.{0,30}instructions",
+      "new\\s+instructions\\s*:",
+      "forget\\s+(?:all|your|previous)\\s+(?:instructions|rules)"
+    ],
+    "role": [
+      "\\byou\\s+are\\s+now\\b",
+      "\\bsystem\\s+prompt\\b",
+      "\\bdeveloper\\s+mode\\b",
+      "<\\|?(?:system|im_start)"
+    ],
+    "agent_addressed": [
+      "\\b(?:AI|LLM|language\\s+model|agent|assistant|Claude|GPT|ChatGPT|Codex|Gemini|Copilot)s?\\b[^.\\n]{0,80}\\b(?:must|should|are\\s+required|need\\s+to|please)\\b"
+    ],
+    "exfil": [
+      "\\b(?:include|append|add|send|post|submit|put|share|attach|leak)\\b[^.\\n]{0,60}\\b(?:user'?s?|owner'?s?|your|the\\s+human'?s?)\\b[^.\\n]{0,30}\\b(?:e-?mail|name|phone|address|api\\s*key|token|password|cookie|credentials?|conversation|context|files?|secrets?)\\b[^.\\n]{0,40}\\b(?:to|into|in|as|via)\\b[^.\\n]{0,40}(?:https?://|\\bus\\b|\\bme\\b|\\bour\\b|\\bthis\\s+(?:url|link|address|endpoint|form|page|site)|\\bthe\\s+following\\b|\\bquery\\b|\\burl\\b|\\bparameter\\b|\\brequest\\b)"
+    ],
+    "exec": [
+      "\\b(?:run|execute|paste)\\s+(?:this|the\\s+following)\\b",
+      "curl\\s+\\S+\\s*\\|\\s*(?:sh|bash|iex)\\b",
+      "\\biex\\s*\\("
+    ]
+  }
+}
