@@ -1,9 +1,9 @@
 # Your protected details and site lists. The real files live in
 # ~/.siftfetch/; these entries catch copies made by accident.
-identifiers.toml
-sites.toml
-config.toml
-*.local.toml
+identifiers.json
+exceptions.json
+/config.json
+egress-decisions.jsonl
 .env
 .env.*
 !.env.example

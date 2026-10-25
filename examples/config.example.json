@@ -1,0 +1,15 @@
+{
+  "contact_alias": "your-alias@your-mail-provider.example",
+  "secret_file_mode": "strict",
+  "cookie_origins": [],
+  "cookies_attended_only": true,
+  "local_endpoints": [],
+  "guard_lock": false,
+  "browser_fetch": {
+    "mode": "off",
+    "window": "offscreen",
+    "browser": "msedge",
+    "max_per_minute": 6,
+    "sites": []
+  }
+}

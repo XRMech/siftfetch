@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "values": [
+    {"label": "personal_email", "kind": "email", "value": "jane.doe@mail.example", "class": "exact"},
+    {"label": "work_email", "kind": "email", "value": "jane@work.example", "class": "exact"},
+    {"label": "phone", "kind": "phone", "value": "555-123-4567", "class": "exact"},
+    {"label": "full_name", "kind": "text", "value": "Jane Q. Doe", "class": "exact"},
+    {"label": "home_town", "kind": "text", "value": "Springfield", "class": "soft", "public_search": true}
+  ]
+}

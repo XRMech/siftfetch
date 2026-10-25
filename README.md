@@ -1,7 +1,7 @@
 # SiftFetch
 
-> **Pre-release draft.** This README was written ahead of the v1 package.
-> Commands such as `siftfetch init` are the planned v1 interface.
+> **Pre-release.** The package runs from this repository; setup is by hand
+> (see [SETUP.md](SETUP.md)). Commands such as `siftfetch init` are planned.
 
 Guardrails for AI coding agents (Claude Code, Codex and others) that use the
 web. They control **what your agent can send**, **what it can open**, and
@@ -45,15 +45,15 @@ and the noise is exactly where hidden injections live.
 
 | You want to control | How |
 |---|---|
-| **What your agent can send** | Every outbound request (web fetch, search query, shell `curl`, browser form) is checked against your protected values before it leaves. The check catches common disguises (`jane(at)gmail`, `%40`, `555.123.4567`, base64). A blocked request tells the agent what to do instead, for example "use the contact alias". |
+| **What your agent can send** | Every outbound request (web fetch, search query, shell `curl`, browser form) is checked against your protected values before it leaves. The check catches common disguises (`jane(at)mail.example`, `%40`, `555.123.4567`, base64). A blocked request tells the agent what to do instead, for example "use the contact alias". |
 | **What your agent can open** | Agents can't read your secrets file or `.env` files, through either their file tools or the shell. Naming a `.env` file is fine; reading its contents is not. A strictness setting, `strict` by default, decides how many read routes are blocked. |
 | **Where your agent can go** | Private, loopback and link-local addresses are refused, and each hostname is resolved once and pinned. An optional allowlist names the sites where your signed-in browser session may be used: exact sites only, https only, read-only requests, never carried to another site after a redirect, and by default only for sessions you are watching. A domain blocklist is planned (see [Status](#status)). |
 | **What your agent sees** | Pages arrive as clean Markdown through [levels of stripping](#extraction-levels). On the documentation pages we measured, the default was about 70% smaller than raw HTML: Python docs went from ~29k to ~9k tokens, Microsoft Learn from ~25k to ~7k. Most pages never need more than the default. For pages that don't fit the known layouts, or work that needs the markup itself, the agent can choose a lighter level, down to the page source. |
-| **How the agent treats what it sees** | Every page is wrapped in an "untrusted web content" envelope with a risk grade. Text addressed to AI agents is flagged inline. Pages graded high-risk are never saved into a knowledge base. |
+| **How the agent treats what it sees** | Every page is wrapped in an "untrusted web content" envelope with a risk grade. Text addressed to AI agents is flagged inline. Pages graded high-risk are quarantined for you to review, never saved. |
 | **Who gives orders** | Rule templates for `CLAUDE.md` / `AGENTS.md`. Outside content can shape *how* the agent does your task, never *what* the task is. Three actions always need you to say so in chat: sending your personal details, loosening guards, and destructive steps the task didn't ask for. |
 
 Two sibling projects:
-- [injection-gauntlet](../injection-gauntlet) measures how gullible an
+- [injection-gauntlet](https://github.com/XRMech/injection-gauntlet) measures how gullible an
   agent or model is, against a local, harmless attack set;
 - `SETUP.md` gets you configured. You can hand it to your agent.
 
@@ -108,8 +108,8 @@ Read this before relying on it.
 
 ## Status
 
-The engine below runs today in the author's own setup and is being
-packaged. "Planned" means designed but not yet built.
+"Built" means it is in this repository and covered by its tests.
+"Planned" means designed but not yet built.
 
 | Capability | Status |
 |---|---|
@@ -119,15 +119,16 @@ packaged. "Planned" means designed but not yet built.
 | Login allowlist: exact origins, https, starting origin only, attended-only | Built |
 | Size and time budgets: fetches stop at 10 MB decoded or 60 s for all hops, headers and body (a DNS lookup can add its system timeout); browser reads check 15 MB in the page and again on the HTML copied out | Built |
 | Hidden-text marking (static and in-browser) | Built |
-| Envelope, risk grade, high-risk pages kept out of the knowledge base | Built |
+| Envelope, risk grade, high-risk pages quarantined by `fetch_and_save` | Built |
 | Bot-wall recovery: official APIs, then optional real-browser reads | Built |
 | Guard lock (agents can't edit the guard's own settings) | Built, off by default |
 | Decision log with no values (a host that may hold one is hashed) | Built |
 | Local egress proxy for real-browser reads | Built |
 | Domain blocklist | Planned |
 | Master `enabled` switch | Planned |
-| TOML config files (`identifiers.toml`, `sites.toml`) | Planned. Today the engine reads JSON. |
-| `siftfetch init` / `doctor`, the installable package | Planned |
+| Installable package (hook, MCP server, tests) | Built. Installs from source. |
+| TOML policy files | Planned. Today the engine reads JSON (`identifiers.json`, `exceptions.json`, `config.json`). |
+| `siftfetch init` / `doctor` / `install` | Planned |
 | `source` extraction level | Planned |
 | The same hook for Codex | Planned. Codex CLI 0.124+ has a PreToolUse hook with the same payload and output, so the guard script can run there unchanged. Not yet wired or tested. |
 | Anonymity (IP, fingerprint, timing) | Not planned |
@@ -136,15 +137,15 @@ packaged. "Planned" means designed but not yet built.
 
     agent ──► Claude Code hook ──► policy engine ──► (allowed) ──► network
       │        (pre-tool check)        ▲
-      │                                │ identifiers.toml  (secret: yours only)
-      └──► guard MCP server ───────────┤ sites.toml        (block / login lists)
-           (search, fetch, clean,      │ config            (secret-file mode)
+      │                                │ identifiers.json  (secret: yours only)
+      └──► guard MCP server ───────────┤ exceptions.json   (one-value grants)
+           (search, fetch, clean,      │ config.json       (logins, alias, modes)
             label, envelope)           │
                                        └ decision log: labels and hosts, never values
 
 ## Quick start
 
-See **[SETUP.md](SETUP.md)**. It takes about 10 minutes. You can do it
+See **[SETUP.md](SETUP.md)**. It takes about 15 minutes. You can do it
 yourself, or tell your agent: "Follow SETUP.md in siftfetch." The
 guide marks the one step only you should do: typing in your personal details.
 
