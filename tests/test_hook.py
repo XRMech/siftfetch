@@ -44,10 +44,16 @@ def policy_dir(tmp_path):
 
 
 def run(payload, policy_dir, *args, headless=False, src=SRC):
+    work = policy_dir.parent / "work"
+    work.mkdir(exist_ok=True)
+    payload = dict(payload, cwd=payload.get("cwd", str(work)))
     env = _env(policy_dir, src)
     if headless:
         env["AGENT_HEADLESS"] = "1"
-    out = subprocess.run([sys.executable, str(HOOK), *args], input=json.dumps(payload),
+    runner = ("import socket,runpy,sys; "
+              "socket.getaddrinfo=lambda *a,**k: [(0,0,0,'',('93.184.216.34',443))]; "
+              "runpy.run_path(sys.argv.pop(1),run_name='__main__')")
+    out = subprocess.run([sys.executable, "-c", runner, str(HOOK), *args], input=json.dumps(payload),
                          capture_output=True, text=True, env=env, timeout=30)
     assert out.returncode == 0
     if not out.stdout:
@@ -68,7 +74,7 @@ def test_clean_calls_produce_no_decision(policy_dir):
     assert run(call("WebFetch", url="https://docs.example/a", prompt="x"), policy_dir) is None
     assert run(call("WebSearch", query="httpx transports"), policy_dir) is None
     assert run(call("Bash", command="curl -s https://api.example/x"), policy_dir) is None
-    assert run(call("Bash", command=f"echo {EMAIL} > notes.txt"), policy_dir) is None
+    assert run(call("Bash", command=f"echo {EMAIL} > notes.txt"), policy_dir) == "deny"
     assert run(call("Read", file_path="C:/x"), policy_dir) is None
 
 
@@ -117,6 +123,9 @@ def test_chrome_form_with_email_asks_only_attended(policy_dir):
 def post(tool, response, policy_dir, src=SRC):
     payload = {"tool_name": tool, "tool_input": {"tabId": 1}, "tool_response": response,
                "hook_event_name": "PostToolUse"}
+    work = policy_dir.parent / "work"
+    work.mkdir(exist_ok=True)
+    payload = dict(payload, cwd=payload.get("cwd", str(work)))
     env = _env(policy_dir, src)
     out = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
                          capture_output=True, text=True, env=env, timeout=30)
@@ -463,9 +472,10 @@ def test_unreadable_lock_setting_fails_closed(policy_dir, config):
                          policy_dir)
     assert decision["permissionDecision"] == "deny"
     assert "guard_lock_unknown" in decision["permissionDecisionReason"]
-    # Reads and unrelated edits still pass.
+    # Shell checks need a valid policy; unrelated file tools still pass.
     for payload in LOCK_READS:
-        assert run(payload, policy_dir) is None, payload
+        expected = "deny" if payload["tool_name"] in ("Bash", "PowerShell") else None
+        assert run(payload, policy_dir) == expected, payload
 
 
 def test_engine_missing_fails_closed_for_locked_paths(policy_dir, tmp_path):
