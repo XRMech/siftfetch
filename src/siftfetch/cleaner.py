@@ -13,6 +13,7 @@ Pipeline steps:
 
 import html
 import re
+import secrets
 from datetime import date
 from urllib.parse import urldefrag, urljoin
 
@@ -21,6 +22,7 @@ from readability import Document
 from markdownify import markdownify as md
 
 from siftfetch.hidden_text import mark_hidden
+from siftfetch.injection_scan import PreparedText, defang_markers, safe_metadata
 
 
 # Elements that never contain useful content.
@@ -674,7 +676,14 @@ def clean_html(
     # background, transparent, off-screen...). This runs before noise
     # stripping, which removes the <style> blocks the detection reads.
     soup = BeautifulSoup(raw_html, "lxml")
-    hidden_reasons = mark_hidden(soup)
+    nonce = secrets.token_hex(16)
+    start_marker, end_marker = f"SFHIDDENSTART{nonce}", f"SFHIDDENEND{nonce}"
+    hidden_reasons = mark_hidden(soup, start_marker, end_marker)
+
+    def prepared(text):
+        text = defang_markers(text)
+        return PreparedText(text.replace(start_marker, "[HIDDEN FROM READERS:")
+                            .replace(end_marker, "[END HIDDEN]"))
 
     # Step 2: Strip noise. "raw" keeps nav/header/aside and noise-named
     # containers, which on documentation sites often hold real content.
@@ -682,7 +691,7 @@ def clean_html(
 
     # Step 3: Extract main content via readability.
     doc = Document(str(soup))
-    title = _extract_title(soup, doc.title() or "")
+    title = safe_metadata(_extract_title(soup, doc.title() or ""))
     content_html = doc.summary()
 
     # Step 4: Convert to markdown.
@@ -782,10 +791,10 @@ def clean_html(
     # cleaned body, before any truncation, so an oversized document stays fully
     # reachable: outline to plan the split, section to pull one piece at a time.
     if mode == "outline":
-        return document_outline(markdown)
+        return prepared(document_outline(markdown))
     if section:
         picked = extract_section(markdown, section)
-        return _truncate_with_marker(picked, max_chars) if max_chars else picked
+        return prepared(_truncate_with_marker(picked, max_chars) if max_chars else picked)
 
     # Paging: drop everything before offset, and say what was skipped so the
     # window is never mistaken for the start of the document.
@@ -808,7 +817,7 @@ def clean_html(
         if title:
             header_parts.append(f"# {title}")
         if url:
-            header_parts.append(f"*Source: {url}*")
+            header_parts.append(f"*Source: {safe_metadata(url)}*")
         header_parts.append(f"*Fetched: {date.today().isoformat()}*")
         header = "\n".join(header_parts)
         body_budget = max_chars
@@ -832,4 +841,4 @@ def clean_html(
     if max_chars and len(result) > max_chars:
         result = _truncate_with_marker(result, max_chars)
 
-    return result
+    return prepared(result)

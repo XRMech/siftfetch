@@ -47,7 +47,7 @@ and the noise is exactly where hidden injections live.
 |---|---|
 | **What your agent can send** | Every outbound request the guard can see (web fetch, search query, shell `curl`, browser form) is checked against your protected values before it leaves. The check catches common disguises (`jane(at)mail.example`, `%40`, `555.123.4567`, base64, zero-width characters). A blocked request tells the agent what to do instead, for example "use the contact alias". |
 | **What your agent can open** | Agents are kept from reading your secrets file and `.env` files: file tools by deny rules, the shell by the hook's patterns. Naming a `.env` file is fine; reading its contents is not. A strictness setting, `strict` by default, decides how many shell read routes are blocked. |
-| **Where your agent can go** | Private, loopback and link-local addresses are refused, and each hostname is resolved once and pinned. An optional allowlist names the sites where your signed-in browser session may be used: exact sites only, https only, read-only requests, never carried to another site after a redirect, and by default only for sessions you are watching. A domain blocklist is planned (see [Status](#status)). |
+| **Where your agent can go** | Private, loopback and link-local addresses are refused. SiftFetch transport resolves and pins addresses; the WebFetch hook makes a best-effort DNS check before the tool resolves again. An optional allowlist names the sites where your signed-in browser session may be used: exact sites only, https only, read-only requests, never carried to another site after a redirect, and by default only for sessions you are watching. A domain blocklist is planned (see [Status](#status)). |
 | **What your agent sees** | Pages arrive as clean Markdown through [levels of stripping](#extraction-levels). On the documentation pages we measured, the default was about 70% smaller than raw HTML: Python docs went from ~29k to ~9k tokens, Microsoft Learn from ~25k to ~7k. Most pages never need more than the default. For pages that don't fit the known layouts, or work that needs the markup itself, the agent can choose a lighter level, down to the page source. |
 | **How the agent treats what it sees** | Every page is wrapped in an "untrusted web content" envelope with a risk grade. Text addressed to AI agents is flagged inline. Pages graded high-risk are quarantined for you to review, never saved. |
 | **Who gives orders** | Rule templates for `CLAUDE.md` / `AGENTS.md`. Outside content can shape *how* the agent does your task, never *what* the task is. Three actions always need you to say so in chat: sending your personal details, loosening guards, and destructive steps the task didn't ask for. |
@@ -56,6 +56,75 @@ Two sibling projects:
 - [injection-gauntlet](https://github.com/XRMech/injection-gauntlet) measures how gullible an
   agent or model is, against a local, harmless attack set;
 - `SETUP.md` gets you configured. You can hand it to your agent.
+
+## Policy checks and labels
+
+The stable Python matching API in `siftfetch.egress_policy` exposes
+`API_VERSION = 1`, `identifier_pattern(kind, value, match="auto")`, and
+`decoded_views(text, budget=None)`. The latter returns `DecodeResult` with
+`views: list[str]` and `complete: bool`; an incomplete result must not be
+treated as a clean scan. The default decoded-byte budget is 4 MB.
+Exact text identifiers with eight or more letters/digits and exact phone
+numbers match inside padding; shorter text and soft identifiers retain word
+boundaries. The owner can choose `word` or `substring` matching in the policy.
+Decoding covers URL/HTML escapes, Unicode normalization, base64, hex and
+base32 through three levels. A shared 4 MB decoded-candidate budget applies
+to each check; exhaustion denies with “could not check.” Reversal, ROT13
+and paraphrase are outside this matching coverage.
+Email matching includes plus tags (up to 128 characters), and Gmail's dotted
+local parts and `googlemail.com` alias. Phones accept up to three spaces,
+dots, hyphens, parentheses, slashes, underscores or commas between digits.
+Policy loaders share schema validation: malformed security fields fail
+closed with the file and field name, without echoing the value. Invalid
+disclosure grants are ignored and counted in a warning; empty identifier
+lists are valid.
+The WebFetch hook resolves destinations with a one-second deadline after
+checking for protected values. Mixed public/private answers and unresolved
+addresses are denied. This is best-effort: the tool resolves again, so DNS
+rebinding remains outside hook coverage. SiftFetch's own transport pins its
+resolved address.
+The hook recognizes Windows device paths and local admin-share spellings.
+Remote UNC edit paths are checked lexically without filesystem probes; use
+a drive-letter path when a sensitive trailing path cannot be checked.
+Every Bash/PowerShell command is checked for exact identifiers and
+credentials; commands naming network clients also check soft identifiers.
+Allowed shell calls are not logged. Shell grants are limited to one command
+prefix, one protected value and an expiry, with no chaining or redirection.
+The hook also checks non-exempt MCP string leaves. Exact identifiers and
+credentials are always checked; URL/recipient/email/body fields also enable
+soft checks. Identifier hits ask when attended and deny unattended.
+SiftFetch's guarded tools and owner-listed `mcp_local_tools` are exempt.
+The Chrome and Claude desktop browser drivers may navigate to private hosts;
+their arguments still receive the protected-value checks.
+Claude Code registrations use `onFailure: "block"` (2.1.295 or later).
+Guard-lock shell checks cover redirections, known download/extraction output
+flags, .NET file writes, copy/move targets and git operations on locked trees.
+Literal nested shells are inspected to depth three. Runtime-built paths and
+child processes remain outside this static inspection.
+Strict secret-file mode detects the listed recursive search forms even when
+no `.env` is named. It walks roots to depth three, skips common build/vendor
+trees, and stops at 20,000 entries (allowing and logging at that bound).
+Compatible exclusions avoid the walk. Literal nested-shell reads are checked
+in standard mode too; policy-folder recursive searches remain protected.
+Deleting, moving or renaming an ancestor of the policy folder is blocked.
+Missing required policy data leaves the guard lock unknown and on; logging
+does not recreate a missing policy folder.
+The guard lock includes project `.mcp.json`. The MCP server defaults to
+unattended; the owner can set `SIFTFETCH_ATTENDED=1` for an interactive
+registration, while `AGENT_HEADLESS=1` always forces unattended behavior.
+Hidden-text extraction scans comments first within a 2 MB character budget,
+without counting overlapping regions twice. Results, envelopes and saved
+records carry `complete`; incomplete scans are graded high and quarantined.
+Envelope and annotation marker families are defanged case-insensitively,
+including markers split by invisible controls, escape tokens or whitespace.
+This happens before real annotations are inserted. Metadata is normalized
+to one line; ordinary content, emoji and code are not Unicode-normalized.
+Saved Markdown retains its full untrusted-content envelope. Downloads keep
+their bytes unchanged and receive a `.siftfetch.json` sidecar with hash, risk
+and completeness. Text is scanned through its first 2 MB, including hidden
+HTML; longer text is marked “partially scanned” and held for owner review.
+High-risk or incompletely scanned text goes to quarantine. Binary files remain
+labeled “not scanned.” The result and sidecar explain an incomplete text scan.
 
 ## Extraction levels
 
@@ -113,7 +182,7 @@ Read this before relying on it.
 
 | Capability | Status |
 |---|---|
-| Value check on fetch, search, native web tools, shell network commands and browser forms | Built |
+| Value checks on fetch/search, all shell commands and non-exempt MCP calls | Built (static call text only) |
 | Disguise decoding (`(at)`, `%40`, spaced digits, base64, zero-width characters) | Built |
 | `.env` read blocking, with `strict` / `standard` / `off` | Built (shell coverage is pattern-based) |
 | Login allowlist: exact origins, https, starting origin only, attended-only | Built |

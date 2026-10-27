@@ -110,7 +110,8 @@ def quarantine(content: str, url: str, title: str, scan: dict, tool: str) -> dic
             raise SaveError(f"quarantine name already taken: {path.name}")
     except OSError as exc:
         raise SaveError(f"quarantine write failed: {exc}") from exc
-    return {"status": "quarantined", "path": str(path), "risk": scan.get("risk")}
+    return {"status": "quarantined", "path": str(path), "risk": scan.get("risk"),
+            "complete": scan.get("complete")}
 
 
 def save(content: str, url: str, name: str, scan: dict, overwrite: bool = False) -> dict:
@@ -144,4 +145,5 @@ def save(content: str, url: str, name: str, scan: dict, overwrite: bool = False)
                                  "provenance": "untrusted-web", **scan}) + "\n")
     except OSError as exc:
         raise SaveError(f"save failed: {exc}") from exc
-    return {"status": "saved", "path": str(path), "risk": scan.get("risk")}
+    return {"status": "saved", "path": str(path), "risk": scan.get("risk"),
+            "complete": scan.get("complete")}

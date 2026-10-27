@@ -60,6 +60,9 @@ Copy the three examples from [`examples/`](examples/) into it, without the
 `.example` part: `identifiers.json`, `exceptions.json`, `config.json`. For
 `config.json` you can start from the locked-down or relaxed example instead
 (see [Choosing how strict](#choosing-how-strict)).
+Complete this step and enter the identifiers before registering the hook.
+Without the required identifiers file, settings edits are blocked with an
+unknown-lock reason naming the policy folder.
 
 ## 3. Enter your protected details **[owner only]**
 
@@ -86,6 +89,17 @@ your agent, and replace the examples:
   only.
 - `label` is what the block message and the decision log show. The value
   itself never appears in either.
+- Optional `match` is `"word"` or `"substring"`. By default, exact text values
+  with at least eight letters/digits match inside padding; shorter text values
+  require word boundaries. Soft values always require word boundaries.
+  Exact phone values match all ten digits even inside a longer number.
+  Phone gaps accept at most three separators (`space . - ( ) / _ ,`);
+  four-separator gaps are not matched. Email plus tags up to 128 characters
+  are recognized; Gmail dots and `gmail.com`/`googlemail.com` are interchangeable.
+
+Integrations can use the versioned `identifier_pattern` and `decoded_views`
+Python API described in README. Check `DecodeResult.complete` before treating
+a scan as complete; `API_VERSION` identifies the API contract.
 
 If this file is missing or doesn't parse, **every web call is blocked**
 until it is fixed. The guard fails closed.
@@ -116,6 +130,9 @@ Tips:
   refused.
 - **Put each value in once, normally written.** The guard catches the usual
   disguises itself: `(at)`, `%40`, separators and base64.
+  URL/HTML escapes, Unicode normalization, base64, hex and base32 are checked
+  recursively to depth three. If the shared 4 MB decode budget runs out,
+  send less at once. Reversal, ROT13 and paraphrase are not decoded.
 - **Leave out things that are public on purpose.** If you post your work
   email on your website, decide whether it needs protecting at all.
 
@@ -130,18 +147,18 @@ In `~/.claude/settings.json`, merge these into what is already there:
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "WebFetch|WebSearch|Bash|PowerShell|mcp__claude-in-chrome__.*|mcp__claude_ai_Google_Drive__share_file",
-        "hooks": [{"type": "command", "command": "PY -m siftfetch.hook"}]
+        "matcher": "WebFetch|WebSearch|Bash|PowerShell|mcp__.*",
+        "hooks": [{"type": "command", "command": "PY -m siftfetch.hook", "onFailure": "block"}]
       },
       {
         "matcher": "Edit|Write|MultiEdit|NotebookEdit",
-        "hooks": [{"type": "command", "command": "PY -m siftfetch.hook"}]
+        "hooks": [{"type": "command", "command": "PY -m siftfetch.hook", "onFailure": "block"}]
       }
     ],
     "PostToolUse": [
       {
         "matcher": "mcp__claude-in-chrome__(get_page_text|read_page|find|javascript_tool)",
-        "hooks": [{"type": "command", "command": "PY -m siftfetch.hook"}]
+        "hooks": [{"type": "command", "command": "PY -m siftfetch.hook", "onFailure": "block"}]
       }
     ]
   },
@@ -159,11 +176,16 @@ servers in `~/.claude.json`, not in `settings.json`):
 
     claude mcp add --scope user siftfetch -- PY -m siftfetch.server
 
-- **If the hook can't run:** when the hook starts but the policy can't load,
-  it blocks every web call (`policy_unavailable`). But if `PY` itself can't
-  start, or can't import `siftfetch` at all, Claude Code treats that as a
-  failed hook and lets the call through. Run the check in step 8 after every
-  update or move of the venv.
+- **If the hook can't run:** `onFailure: "block"` blocks startup failures,
+  crashes and timeouts in Claude Code 2.1.295 and later. Keep it on every
+  registration and rerun step 8 after moving or updating the interpreter.
+- **MCP calls:** all non-exempt tools check string leaves for exact identifiers
+  and credentials; URL/recipient/email/body fields also enable soft checks.
+  Hits ask in attended sessions and deny unattended (credentials always deny).
+  SiftFetch's internally guarded tool names are exempt. The owner can add
+  `mcp_local_tools: ["mcp__local__inspect", "mcp__local_server__*"]` for trusted
+  local tools; these entries skip value checks, so list only local tools.
+  Allowed MCP calls are not logged.
 - **The Edit/Write hook** enforces the guard lock (step 5) and keeps edit
   tools out of the policy folder, wherever it is. Keeping file tools away
   from `.env` contents is the deny rules' job.
@@ -172,12 +194,26 @@ servers in `~/.claude.json`, not in `settings.json`):
 - **Deny rules:** both `**/` and `//**/` forms, because `**/` alone covers
   only the current project. Allow `.env.example` back if you want agents to
   read templates.
+  Keep these rules as well as the hook: deny rules match the spelling given,
+  while the hook also catches device paths, local UNC admin shares and
+  existing 8.3 short names. Sensitive remote UNC paths require a drive-letter
+  path; the hook does not probe remote shares.
 - **Optional:** deny the built-in `WebFetch` and `WebSearch` so the agent
   uses SiftFetch's `fetch_url` and `search_web`, which clean, grade and wrap
   every page.
 
 For unattended runs (scheduled jobs, background agents), launch with
 `AGENT_HEADLESS=1`. Those sessions never get your logins.
+The MCP server defaults to unattended even without that variable. For an
+interactive registration, the owner adds `SIFTFETCH_ATTENDED=1` to the server's
+environment (for Claude Code, add `--env SIFTFETCH_ATTENDED=1` when registering;
+for Codex, use the server's `env` table). This affects login access and
+soft-identifier decisions. `AGENT_HEADLESS=1` always overrides the opt-in.
+
+WebFetch hostnames must resolve to public addresses within one second unless
+listed in `local_endpoints`. “Couldn't confirm the address is public” means
+the lookup failed or timed out; retry. The hook cannot pin the tool's later
+lookup, unlike SiftFetch's own transport.
 
 ### Codex CLI
 
@@ -200,8 +236,8 @@ register it, remember that Codex silently skips a hook it hasn't trusted.
 ## 5. Review your settings **[owner only, optional]**
 
 Every setting lives in `~/.siftfetch/config.json`, and every one is
-optional; a missing value takes its default. An invalid `secret_file_mode`
-or `browser_fetch` value falls back to the strict choice. A `config.json`
+optional; a missing value takes its default. Invalid security settings fail
+closed; non-security `browser_fetch` details keep conservative defaults. A `config.json`
 that doesn't parse, or a malformed `local_endpoints` or `cookie_origins`
 entry, stops the policy loading, so every web call is blocked with
 `policy_unavailable` until you fix it.
@@ -255,6 +291,7 @@ Environment variables:
 | `SIFTFETCH_DATA` | Moves the data folder (step 7). |
 | `SIFTFETCH_CONTACT_ALIAS` | The contact alias; wins over `config.json`. |
 | `AGENT_HEADLESS=1` | Marks the session as unattended. |
+| `SIFTFETCH_ATTENDED=1` | Owner opt-in for an interactive MCP server; headless overrides it. |
 
 ### `.env` protection
 
@@ -268,6 +305,18 @@ Claude Code also refuses any shell command that *names* a read-denied file,
 even `ls .env`. That check is Claude Code's own, not this guard's. Listing
 the folder still works.
 
+Strict mode also checks `rg --hidden/-uu/--no-ignore`, `grep -r/-R`,
+`findstr /s`, and recursive Get-ChildItem pipelines into readers. Searches
+restricted to source types/globs or excluding `.env*` remain allowed. Otherwise
+the hook checks names to depth three, skipping common dependency/build trees,
+and allows with a log entry if it reaches 20,000 entries. A block suggests
+the tool's exclusion flag. Standard mode permits these unnamed recursive
+reads, but both modes inspect literal nested shells to depth three, including
+UTF-16LE PowerShell EncodedCommand. Searches containing the policy folder
+must exclude it regardless of the secret-file mode.
+Only `.env.example`, `.env.sample` and `.env.template` are treated as templates;
+other `.env.*` names, including `.env.dist`, are protected.
+
 ### Locking the guard's own settings
 
 An agent that keeps getting blocked from a goal may try to remove the block
@@ -278,6 +327,7 @@ deleting the hook script. With `"guard_lock": true`:
   - `.claude/settings.json` and `settings.local.json`, in every project;
   - `.claude/hooks/`;
   - `.codex/config.toml`;
+  - `.mcp.json`, so agents cannot add project MCP servers while locked;
 - to lock more paths, use the object form:
   `"guard_lock": {"enabled": true, "paths": ["C:/tools/siftfetch"]}`;
 - paths are resolved, not matched as text: `cd ~/.claude && rm
@@ -287,11 +337,18 @@ deleting the hook script. With `"guard_lock": true`:
   link or junction to it; edits through an existing link are checked
   against where the link leads;
 - reading them stays allowed;
+- shell writes include redirections (including attached descriptor forms),
+  known downloader/archive output flags, .NET file methods, copy/move targets
+  and git operations on locked trees. Literal nested shells are checked to
+  depth three. Policy-folder protection remains active with the lock off;
 - the lock switch itself sits in the folder agents can't touch, so they
   can't turn it off;
 - if the lock setting can't be read (a broken config file, or a value that
   isn't `true`, `false` or a valid object), the built-in paths stay locked
-  and the block message says why. A missing config file means off.
+  and the block message says why. A missing optional config means off only
+  when the required identifiers file is valid. A missing policy folder or
+  identifiers file leaves the built-in paths locked; logging does not
+  recreate that folder. Deleting, moving or renaming its ancestors is blocked.
 
 It is your choice, and off by default. With it off, agents edit agent
 settings as usual when you ask. To change a locked file, edit it yourself,
@@ -308,6 +365,16 @@ changes to it either, such as `/config` choices.
 
 ### Disclosure grants
 
+Every shell command is value-checked, including commits and configuration.
+Commands containing the owner's email are blocked until the owner adds a
+shell grant such as `{"label":"work_email","op":"shell",
+"command_prefix":"git config user.email","expires":"2027-01-31T00:00:00Z"}`
+to the exceptions list. It allows only a single command starting with that
+prefix and carrying only that protected value. Chains, pipes, redirections,
+command substitutions and background operators do not qualify. Non-network
+commands check exact identifiers and credentials; soft identifiers are
+checked on commands naming network clients. Allowed shell calls are not logged.
+
 Sometimes you do want one value to reach one place, such as your work email
 in a form on your employer's site. `~/.siftfetch/exceptions.json` allows one
 value, at one origin, for one kind of request, in one spot, until a date:
@@ -321,8 +388,8 @@ value, at one origin, for one kind of request, in one spot, until a date:
 
 `location` is `host`, `path`, `query` or `param:<name>`. `expires` must be
 an RFC 3339 time with an offset. A grant with a bad or missing `expires`
-is ignored, never widened; one missing another field stops the policy
-loading, which blocks every web call until it is fixed. A grant never
+is ignored, never widened; other malformed grants are also ignored and
+counted in a warning. A grant never
 applies to a path holding `.` or `..` segments, `%2f` or `\`, since the
 server may resolve those to a path outside `path_prefix`.
 
@@ -358,11 +425,24 @@ What the agent saves goes in a separate folder it *can* read:
 or `SIFTFETCH_DATA`.
 
 - `saved/`: pages saved with `fetch_and_save`, as Markdown.
+  Files begin and end with the untrusted-content envelope markers.
 - `saved-ledger.jsonl`: one line per save (path, URL, risk grade, time), so
   anything that later reads `saved/` can tell web content apart.
+  Records also carry scan completeness. Hidden-text extraction has a 2 MB
+  character budget, scanning comments first; incomplete scans are high-risk
+  and quarantined rather than saved.
+  Forged envelope/annotation markers are visibly quoted before real labels
+  are inserted. Source URLs and title metadata are normalized to one line;
+  content lines beginning `source=` or `risk=` receive a visible quote prefix.
 - `quarantine/`: pages graded high-risk, held as JSON for you to review.
   Nothing in it is ever written to `saved/`.
 - `downloads/`: files from `download_to_staging`.
+  Bytes are unchanged. Each file has a `<file>.siftfetch.json` sidecar carrying
+  its hash, risk and completeness. Text (including hidden HTML) is scanned
+  through the first 2 MB; larger text is “partially scanned,” binary is “not
+  scanned.” High-risk or incompletely scanned text goes to `quarantine/` instead
+  of `downloads/`; the result and sidecar explain when text was too large to
+  scan fully and is held for owner review.
 
 The decision log, `egress-decisions.jsonl`, stays in the policy folder. It
 holds labels, hosts and reason codes, never values; a host that may hold a

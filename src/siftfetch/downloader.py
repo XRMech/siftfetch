@@ -18,11 +18,13 @@ import httpx
 import pyexpat
 
 from siftfetch.fetcher import _decoded, checked_response
-from siftfetch.saving import is_link
+from siftfetch import injection_scan
+from siftfetch.saving import _safe_folder, _write_new, is_link
 
 # Callers may lower these, never raise them.
 HARD_MAX_BYTES = 50_000_000
 HARD_MAX_SECONDS = 120.0
+TEXT_SCAN_BYTES = 2 * 1024 * 1024
 
 _EXTENSIONS = {"pdf": "pdf", "html": "html", "text": "txt", "json": "json",
                "xml": "xml", "zip": "zip"}
@@ -90,11 +92,39 @@ def _validate(expect: str, data: bytes, content_type: str) -> None:
         raise DownloadRejected("type_mismatch", f"Content is not valid {expect}.")
 
 
+def _scan_download(data: bytes, expect: str, content_type: str) -> dict:
+    sample = data[:TEXT_SCAN_BYTES]
+    try:
+        text = sample.decode(_charset(content_type), errors="replace")
+    except LookupError:
+        text = sample.decode("utf-8", errors="replace")
+    binary_signature = data.startswith((b"%PDF-", b"PK\x03\x04", b"PK\x05\x06"))
+    sniff = text[:4096]
+    looks_text = bool(sniff) and not binary_signature and "\x00" not in sniff and (
+        sum(c.isprintable() or c.isspace() for c in sniff) / len(sniff) >= .95
+        and "\ufffd" not in sniff)
+    if expect not in ("html", "text", "json", "xml") and not looks_text:
+        return {"risk": "not scanned", "complete": False, "scan_status": "not scanned"}
+    hidden = injection_scan.hidden_texts(text) if expect == "html" or "<" in text else []
+    _, scan = injection_scan.scan_text(text, hidden)
+    complete = len(data) <= TEXT_SCAN_BYTES and scan.complete and "\ufffd" not in text
+    incomplete_text = not complete and expect in ("html", "text", "json", "xml")
+    reason = {}
+    if incomplete_text:
+        reason["reason"] = ("too large to scan fully; held for owner review" if len(data) > TEXT_SCAN_BYTES
+                            else "text could not be scanned fully; held for owner review")
+    return {"risk": "high" if incomplete_text else scan.risk, "complete": complete, **reason,
+            "scan_status": "scanned" if complete else "partially scanned",
+            "patterns_version": scan.patterns_version,
+            "categories": list(scan.categories), "hidden_categories": list(scan.hidden_categories)}
+
+
 def download_to_staging(url: str, staging_dir: Path, expect: str,
                         max_bytes: int = HARD_MAX_BYTES, browser: str = "none") -> dict:
     """Download ``url`` into ``staging_dir/downloads`` and validate it.
 
-    Returns ``{path, bytes, sha256, content_type}``. Raises EgressDenied when
+    Returns location, hash, risk, completeness and sidecar metadata.
+    Raises EgressDenied when
     the policy refuses a hop and DownloadRejected for size, time, type or
     staging-safety failures; a rejected file is deleted before raising.
     """
@@ -132,11 +162,26 @@ def download_to_staging(url: str, staging_dir: Path, expect: str,
                 if time.monotonic() >= deadline:
                     raise timeout from exc
                 raise
-        _validate(expect, part.read_bytes(), content_type)
+        data = part.read_bytes()
+        _validate(expect, data, content_type)
+        scan = _scan_download(data, expect, content_type)
         sha = digest.hexdigest()
-        final = downloads / f"{sha[:16]}.{_EXTENSIONS[expect]}"
+        quarantined = scan["risk"] in injection_scan.QUARANTINE_RISKS
+        folder = _safe_folder(Path(staging_dir), "quarantine") if quarantined else downloads
+        final = folder / f"{sha[:16]}.{_EXTENSIONS[expect]}"
+        sidecar = final.with_name(final.name + ".siftfetch.json")
+        result = {"path": str(final), "bytes": size, "sha256": sha, "content_type": content_type,
+                  "status": "quarantined" if quarantined else "downloaded", **scan,
+                  "sidecar": str(sidecar), "provenance": "untrusted-web"}
+        metadata_part = folder / f".part-{secrets.token_hex(8)}"
+        if not _write_new(metadata_part, json.dumps(result, ensure_ascii=False, indent=2)):
+            raise DownloadRejected("unsafe_staging", "Metadata name collided; retry.")
+        try:
+            os.replace(metadata_part, sidecar)
+        finally:
+            metadata_part.unlink(missing_ok=True)
         os.replace(part, final)
     except BaseException:
         part.unlink(missing_ok=True)
         raise
-    return {"path": str(final), "bytes": size, "sha256": sha, "content_type": content_type}
+    return result

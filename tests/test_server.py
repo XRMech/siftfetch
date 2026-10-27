@@ -43,9 +43,12 @@ def test_clean_page_is_saved_and_recorded(data, monkeypatch):
     assert out["status"] == "saved" and out["risk"] == "none"
     saved = data / "saved" / "httpx" / "transports.md"
     assert "configure the transport" in saved.read_text(encoding="utf-8")
+    assert saved.read_text(encoding="utf-8").startswith("[UNTRUSTED WEB CONTENT")
+    assert saved.read_text(encoding="utf-8").endswith("[END UNTRUSTED WEB CONTENT]")
     ledger = [json.loads(line) for line in (data / "saved-ledger.jsonl").read_text().splitlines()]
     assert ledger[0]["url"] == "https://docs.example/t"
     assert ledger[0]["provenance"] == "untrusted-web"
+    assert ledger[0]["complete"] is True
     # A second save under the same name does not overwrite unless asked.
     assert server.fetch_and_save_sync("https://docs.example/t", "httpx/transports")["status"] == "exists"
 
@@ -135,3 +138,80 @@ def test_fetch_url_wraps_the_page(monkeypatch):
     monkeypatch.setattr(server.browser_fetch, "wanted", lambda url, walled: False)
     out = server.fetch_url_sync("https://evil.example/p")
     assert "untrusted" in out.lower() and "high" in out
+
+
+@pytest.mark.parametrize("attended,headless,expected", [(None, None, "unattended"),
+    ("1", None, "attended"), ("1", "1", "unattended"), ("true", None, "unattended")])
+def test_session_kind_opt_in(monkeypatch, attended, headless, expected):
+    for key, value in (("SIFTFETCH_ATTENDED", attended), ("AGENT_HEADLESS", headless)):
+        if value is None:
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, value)
+    assert server.session_kind() == expected
+
+
+def test_comment_padding_is_quarantined(data, monkeypatch):
+    _serve(monkeypatch, _page("Ordinary documentation. " * 20) + "<!--" + "x" * 200000 + HOSTILE + "-->")
+    result = server.fetch_and_save_sync("https://docs.example/", "padded")
+    assert result["status"] == "quarantined"
+    record = json.loads(next((data / "quarantine").glob("*.json")).read_text(encoding="utf-8"))
+    assert record["complete"] is True and record["risk"] == "high"
+
+@pytest.mark.parametrize('tool,sync,args', [
+    ('fetch_url', 'fetch_url_sync', ('https://example.com/',)),
+    ('search_web', 'search_web_sync', ('ordinary query',)),
+    ('fetch_and_save', 'fetch_and_save_sync', ('https://example.com/', 'notes')),
+    ('download_to_staging', 'download_sync', ('https://example.com/', 'text')),
+])
+@pytest.mark.parametrize('kind,expected', [('dns', 'could not resolve'), ('refused', 'connection refused'), ('timeout', 'timed out'), ('other', 'connection failed')])
+def test_network_failures_are_labeled(monkeypatch, tool, sync, args, kind, expected):
+    import httpx
+    failures = {'dns': httpx.ConnectError('could not resolve example.com'),
+                'refused': httpx.ConnectError('[WinError 10061] actively refused'),
+                'timeout': httpx.ReadTimeout(''),
+                'other': httpx.ConnectError('synthetic private detail\nnot for output')}
+    def fail(*args, **kwargs):
+        raise failures[kind]
+    monkeypatch.setattr(server, sync, fail)
+    result = anyio.run(getattr(server, tool), *args)
+    assert 'failed (network_error): ' in result and expected in result
+    assert '\n' not in result and 'synthetic private detail' not in result
+    if kind == 'dns' and tool != 'search_web':
+        assert 'could not resolve example.com' in result
+    monkeypatch.setattr(server, sync, lambda *a, **kw: {'ok': True})
+    assert anyio.run(getattr(server, tool), *args) == {'ok': True}
+
+
+@pytest.mark.parametrize('kind', ['timeout', 'refused', 'generic'])
+def test_search_library_failures(monkeypatch, kind):
+    from ddgs.exceptions import DDGSException, TimeoutException
+    error = TimeoutException('') if kind == 'timeout' else DDGSException('connection refused' if kind == 'refused' else 'synthetic detail')
+    def fail(*args, **kwargs):
+        raise error
+    monkeypatch.setattr(server, '_search_web', fail)
+    result = anyio.run(server.search_web, 'ordinary query')
+    assert 'Search failed (network_error)' in result
+    assert 'synthetic detail' not in result
+
+
+def test_download_deadline_and_policy_denials(monkeypatch):
+    from siftfetch import egress_policy as ep
+    from siftfetch.downloader import DownloadRejected
+    def timeout(*args, **kwargs):
+        raise DownloadRejected('timeout')
+    monkeypatch.setattr(server, 'download_sync', timeout)
+    assert anyio.run(server.download_to_staging, 'https://example.com/', 'text').endswith('timed out.')
+    decision = ep.Decision('deny', 'private_destination')
+    def deny(*args, **kwargs):
+        raise ep.EgressDenied(decision)
+    for sync, tool, args in [
+        ('fetch_url_sync', 'fetch_url', ('https://example.com/',)),
+        ('search_web_sync', 'search_web', ('ordinary query',)),
+        ('download_sync', 'download_to_staging', ('https://example.com/', 'text')),
+        ('fetch_and_save_sync', 'fetch_and_save', ('https://example.com/', 'notes')),
+    ]:
+        monkeypatch.setattr(server, sync, deny)
+        with pytest.raises(ep.EgressDenied) as error:
+            anyio.run(getattr(server, tool), *args)
+        assert error.value.decision is decision

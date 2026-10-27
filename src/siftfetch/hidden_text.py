@@ -228,10 +228,9 @@ def _own_text(el: Tag) -> bool:
                for c in el.children)
 
 
-def hidden_regions(soup: BeautifulSoup) -> list[tuple[Tag, str]]:
+def iter_hidden_regions(soup: BeautifulSoup):
     """Elements whose text a human reader can't see, with the reason, in page order."""
     rules = _style_rules(soup)
-    found: list[tuple[Tag, str]] = []
     root = soup.find("html") or soup
 
     def walk(el: Tag, color, background, font_px: float, opacity: float, visibility: str):
@@ -239,8 +238,8 @@ def hidden_regions(soup: BeautifulSoup) -> list[tuple[Tag, str]]:
         opacity *= _opacity(style.get("opacity"))
         reason = _subtree_reason(el, style, opacity)
         if reason:
-            if el.get_text(strip=True):
-                found.append((el, reason))
+            if any(text.strip() for text in el.strings):
+                yield el, reason
             return
         color = _parse_color(style["color"]) if "color" in style else color
         background = _background(style, background)
@@ -250,15 +249,18 @@ def hidden_regions(soup: BeautifulSoup) -> list[tuple[Tag, str]]:
         if _own_text(el):
             reason = _text_reason(color, background, font_px, visibility)
             if reason:
-                found.append((el, reason))
+                yield el, reason
                 return
         for child in el.children:
             if isinstance(child, Tag) and child.name not in ("script", "style", "noscript"):
-                walk(child, color, background, font_px, opacity, visibility)
+                yield from walk(child, color, background, font_px, opacity, visibility)
 
     if isinstance(root, Tag):
-        walk(root, (0.0, 0.0, 0.0, 1.0), _WHITE, 16.0, 1.0, "visible")
-    return found
+        yield from walk(root, (0.0, 0.0, 0.0, 1.0), _WHITE, 16.0, 1.0, "visible")
+
+
+def hidden_regions(soup: BeautifulSoup) -> list[tuple[Tag, str]]:
+    return list(iter_hidden_regions(soup))
 
 
 # Ordinary interface hiding: menus, dialogs, tabs and language pickers are
@@ -274,7 +276,8 @@ def concealed(reason: str) -> bool:
     return not reason.startswith(_UI_HIDING)
 
 
-def mark_hidden(soup: BeautifulSoup) -> list[str]:
+def mark_hidden(soup: BeautifulSoup, start_marker: str = "[HIDDEN FROM READERS:",
+                end_marker: str = "[END HIDDEN]") -> list[str]:
     """Mark hidden regions inline; returns the reason of each region marked.
 
     Concealed text (colored like its background, transparent, tiny,
@@ -291,8 +294,8 @@ def mark_hidden(soup: BeautifulSoup) -> list[str]:
             continue
         if not concealed(reason) and not suspicious(text):
             continue
-        el.insert(0, NavigableString(f" [HIDDEN FROM READERS: {reason}] "))
-        el.append(NavigableString(" [END HIDDEN] "))
+        el.insert(0, NavigableString(f" {start_marker} {reason}] "))
+        el.append(NavigableString(f" {end_marker} "))
         marked.append(reason)
     return marked
 

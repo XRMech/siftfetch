@@ -13,9 +13,12 @@ off the event loop, so tests and other callers get the same labeling.
 from __future__ import annotations
 
 import os
+import socket
+from urllib.parse import urlsplit
 
 import anyio
 import httpx
+from ddgs.exceptions import DDGSException, TimeoutException as SearchTimeout
 from mcp.server.mcpserver import MCPServer
 
 from siftfetch import browser_fetch, injection_scan, saving
@@ -30,6 +33,7 @@ from siftfetch.cleaner import (
     site_api_urls,
 )
 from siftfetch.downloader import download_to_staging as _download_to_staging
+from siftfetch.downloader import DownloadRejected
 from siftfetch.fetcher import bot_wall, fetch, list_available_sessions
 from siftfetch.search import search_web as _search_web
 
@@ -51,7 +55,7 @@ def _browser_read(url, window, max_chars, offset, mode, section, extract):
     )
     out = clean_html(page.html, url=page.url, max_chars=max_chars, offset=offset,
                      mode=mode, section=section, extract=extract)
-    return header + out, page.html
+    return injection_scan.PreparedText(header + out), page.html
 
 
 def _wall_recovery(url, status, max_chars, offset, mode, section, extract):
@@ -86,9 +90,9 @@ def _wall_recovery(url, status, max_chars, offset, mode, section, extract):
 
 
 def session_kind() -> str:
-    """Unattended when the launcher says so (``AGENT_HEADLESS=1``). Unattended
-    sessions never get the owner's logins and never get "ask" decisions."""
-    return "unattended" if os.environ.get("AGENT_HEADLESS") == "1" else "attended"
+    """Only an explicit interactive registration enables attended behavior."""
+    return "attended" if (os.environ.get("SIFTFETCH_ATTENDED") == "1" and
+                           os.environ.get("AGENT_HEADLESS") != "1") else "unattended"
 
 
 def _fetch_url_raw(url, browser, max_chars, offset, mode, section, extract,
@@ -154,6 +158,7 @@ def _label(text: str, raw: str):
 def _scan_record(scan) -> dict:
     return {
         "risk": scan.risk,
+        "complete": scan.complete,
         "categories": list(scan.categories),
         "hidden_categories": list(scan.hidden_categories),
         "patterns_version": scan.patterns_version,
@@ -173,12 +178,12 @@ def search_web_sync(query: str, max_results: int = 5) -> list[dict]:
     """search_web with every title and snippet escaped, flagged and graded."""
     results = []
     for item in _search_web(query, max_results=max_results):
-        title, title_scan = injection_scan.scan_text(item.get("title", ""))
+        title, title_scan = injection_scan.scan_text(injection_scan.safe_metadata(item.get("title", "")))
         snippet, snip_scan = injection_scan.scan_text(item.get("snippet", ""))
         worst = max(title_scan.risk, snip_scan.risk, key=injection_scan.RISK_ORDER.index)
         results.append({
             "title": title,
-            "url": item.get("url", ""),
+            "url": injection_scan.safe_metadata(item.get("url", "")),
             "snippet": snippet,
             "provenance": "untrusted-web",
             "risk": worst,
@@ -197,11 +202,48 @@ def fetch_and_save_sync(url, name, browser="none", overwrite=False, max_chars=0,
         held = saving.quarantine(labeled, url, title, _scan_record(scan), "fetch_and_save")
         return {**held, "saved": False,
                 "reason": "page held for owner review; nothing was saved"}
-    return saving.save(labeled, url, name, _scan_record(scan), overwrite=overwrite)
+    wrapped = injection_scan.envelope(labeled, url, scan)
+    return saving.save(wrapped, url, name, _scan_record(scan), overwrite=overwrite)
 
 
 def download_sync(url: str, expect: str, max_bytes: int) -> dict:
     return _download_to_staging(url, saving.data_dir(), expect, max_bytes=max_bytes)
+
+
+def _network_failure(exc: Exception, operation: str, url: str) -> str:
+    causes, seen = [], set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        causes.append(current)
+        current = current.__cause__ or current.__context__
+    messages = " ".join(str(c).lower() for c in causes)
+    if (any(isinstance(c, (httpx.TimeoutException, SearchTimeout, TimeoutError)) for c in causes)
+            or isinstance(exc, DownloadRejected) and exc.reason == "timeout"
+            or "timed out" in messages or "timeout" in messages):
+        detail = "timed out"
+    elif (any(isinstance(c, socket.gaierror) for c in causes)
+          or any(word in messages for word in ("could not resolve", "getaddrinfo", "name or service not known", "nodename nor servname"))):
+        try:
+            host = urlsplit(url).hostname
+        except ValueError:
+            host = None
+        detail = "could not resolve " + (injection_scan.safe_metadata(host) if host else "the service host")
+    elif (any(isinstance(c, ConnectionRefusedError) or getattr(c, "errno", None) in (61, 111, 10061) for c in causes)
+          or any(word in messages for word in ("connection refused", "actively refused", "10061"))):
+        detail = "connection refused"
+    else:
+        detail = "connection failed" if isinstance(exc, httpx.TransportError) else "service request failed"
+    return f"{operation} failed (network_error): {detail}."
+
+
+async def _network_result(call, operation: str, url: str = ""):
+    try:
+        return await anyio.to_thread.run_sync(call)
+    except (httpx.TransportError, DDGSException, DownloadRejected) as exc:
+        if isinstance(exc, DownloadRejected) and exc.reason != "timeout":
+            raise
+        return _network_failure(exc, operation, url)
 
 
 @mcp.tool()
@@ -237,14 +279,14 @@ async def fetch_url(
         show_browser: True reads the page in a visible browser window, when
             the owner asks to watch. Needs browser_fetch turned on.
     """
-    return await anyio.to_thread.run_sync(
+    return await _network_result(
         lambda: fetch_url_sync(url, browser, max_chars, offset, mode, section, extract,
-                               show_browser, session_kind())
+                               show_browser, session_kind()), "Fetch", url
     )
 
 
 @mcp.tool()
-async def search_web(query: str, max_results: int = 5) -> list[dict]:
+async def search_web(query: str, max_results: int = 5) -> list[dict] | str:
     """Search the web (DDGS: DuckDuckGo and other engines) after the privacy
     policy approves the query.
 
@@ -255,12 +297,12 @@ async def search_web(query: str, max_results: int = 5) -> list[dict]:
         query: Search query.
         max_results: Number of results (1-20, default 5).
     """
-    return await anyio.to_thread.run_sync(lambda: search_web_sync(query, max_results))
+    return await _network_result(lambda: search_web_sync(query, max_results), "Search")
 
 
 @mcp.tool()
 async def fetch_and_save(url: str, name: str, browser: str = "none",
-                         overwrite: bool = False) -> dict:
+                         overwrite: bool = False) -> dict | str:
     """Fetch a page and save it as Markdown in the SiftFetch data folder.
 
     A page graded high-risk is quarantined for the owner instead, and
@@ -272,22 +314,23 @@ async def fetch_and_save(url: str, name: str, browser: str = "none",
         browser: "none" (default) or "edge"/"chrome", as for fetch_url.
         overwrite: Replace an existing file. Default False.
     """
-    return await anyio.to_thread.run_sync(
-        lambda: fetch_and_save_sync(url, name, browser, overwrite, 0, session_kind())
+    return await _network_result(
+        lambda: fetch_and_save_sync(url, name, browser, overwrite, 0, session_kind()), "Fetch", url
     )
 
 
 @mcp.tool()
-async def download_to_staging(url: str, expect: str, max_bytes: int = 50_000_000) -> dict:
+async def download_to_staging(url: str, expect: str, max_bytes: int = 50_000_000) -> dict | str:
     """Download a file (PDF, HTML, text, JSON, XML or zip) into the data folder.
 
     Use this instead of curl/Invoke-WebRequest. Every redirect passes the
     same privacy policy as fetch_url, the server picks the file name, and the
     content must match ``expect``. Nothing is executed or extracted. Returns
-    {path, bytes, sha256, content_type}. max_bytes can only lower the 50 MB
-    limit.
+    path, bytes, sha256, content_type, risk, completeness and a sidecar path.
+    Text is scanned up to 2 MB; high-risk or incomplete text scans are quarantined. Binary bytes
+    are labeled not scanned. max_bytes can only lower the 50 MB limit.
     """
-    return await anyio.to_thread.run_sync(lambda: download_sync(url, expect, max_bytes))
+    return await _network_result(lambda: download_sync(url, expect, max_bytes), "Download", url)
 
 
 @mcp.tool()
