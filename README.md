@@ -212,6 +212,28 @@ Read this before relying on it.
             label, envelope)           │
                                        └ decision log: labels and hosts, never values
 
+## Use from your own tools
+
+The MCP server is a thin layer over `siftfetch.tools`, which does not import
+the MCP SDK, so a project on any MCP version can call the same guarded path:
+
+```python
+from siftfetch import tools
+
+page = tools.fetch_url_sync("https://docs.python.org/3/library/venv.html")
+hits = tools.search_web_sync("httpx transports", max_results=5)
+text, raw = tools.fetch_url_raw(url)          # unlabeled: label before use
+labeled, scan = tools.label(text, raw)        # escape, flag, grade
+result = tools.guarded(lambda: tools.fetch_url_sync(url), "Fetch", url)
+```
+
+Every request still passes the owner's privacy policy, and network failures
+raise unless wrapped in `guarded`, which returns the same one-line result the
+MCP tools give. `download_sync(url, expect, max_bytes, staging_dir)` writes
+into the caller's folder. Install SiftFetch without its dependencies
+(`pip install --no-deps -e <path>`) when the host project pins a different
+`mcp`; `siftfetch.tools` needs only the HTML and search stack.
+
 ## Quick start
 
 See **[SETUP.md](SETUP.md)**. It takes about 15 minutes. You can do it
