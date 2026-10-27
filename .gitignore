@@ -18,5 +18,6 @@ build/
 .pytest_cache/
 
 # Local test and run output
+.test-runs/
 runs/
 *.log

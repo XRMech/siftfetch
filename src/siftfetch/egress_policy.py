@@ -37,12 +37,14 @@ import socket
 import threading
 import time
 import unicodedata
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 POLICY_VERSION = "egress-1"
+API_VERSION = 1
 
 # A request larger than this is not scanned; it is denied. Real search queries
 # and URLs are far smaller, and an unbounded input would make the decoder an
@@ -51,7 +53,7 @@ MAX_INPUT_BYTES = 1_000_000
 
 # Runs this long are plausible base64 payloads; shorter ones are mostly words
 # and identifiers that decode to noise.
-_B64_RUN = re.compile(r"[A-Za-z0-9+/_-]{16,4096}={0,2}")
+_B64_RUN = re.compile(r"[A-Za-z0-9+/_-]{12,}={0,2}")
 
 _CREDENTIAL_PATTERNS = [
     re.compile(p)
@@ -90,11 +92,13 @@ _NEXT_STEP = {
         "parameter or has a bare flag and also holds a protected value; send "
         "a plain canonical URL without the protected value."
     ),
+    "could_not_check": "Could not check all encoded content; send less at once.",
     "oversized_input": "The request is too large to check; send a smaller request.",
     "private_destination": (
         "Private, loopback and link-local destinations are not reachable "
         "through this route."
     ),
+    "destination_unconfirmed": "Couldn't confirm the address is public; retry the request.",
 }
 
 
@@ -111,6 +115,7 @@ class Decision:
     action: str  # "allow" | "deny" | "ask"
     reason_code: str = "ok"
     label: str | None = None
+    sensitive_host: bool = field(default=False, compare=False, repr=False)
 
     @property
     def next_step(self) -> str:
@@ -153,6 +158,7 @@ class _Grant:
     location: str
     path_prefix: str
     expires: datetime
+    command_prefix: str = ""
 
 
 @dataclass
@@ -190,13 +196,113 @@ def policy_fingerprint() -> str:
 SECRET_FILE_MODES = ("strict", "standard", "off")
 
 
-def _config() -> dict:
-    """The optional ``config.json``; empty when missing or unreadable."""
+class PolicyError(ValueError):
+    """A policy file or field is invalid; never includes its value."""
+
+
+def validate_policy(name: str, data: object) -> dict:
+    def require(ok, field):
+        if not ok:
+            raise PolicyError(f"{name}: {field} is invalid")
+
+    require(isinstance(data, dict), "root")
+    if name == "identifiers.json":
+        require(isinstance(data.get("values"), list), "values")
+        for i, entry in enumerate(data["values"]):
+            field = f"values[{i}]"
+            require(isinstance(entry, dict), field)
+            for key in ("label", "value"):
+                require(isinstance(entry.get(key), str), field + "." + key)
+            require(isinstance(entry.get("kind"), str) and entry["kind"] in _KIND_PATTERNS, field + ".kind")
+            require(entry.get("class") in ("exact", "soft"), field + ".class")
+            if "public_search" in entry:
+                require(type(entry["public_search"]) is bool, field + ".public_search")
+                require(not entry["public_search"] or entry["class"] == "soft", field + ".public_search")
+            if "match" in entry:
+                require(entry["match"] in ("word", "substring"), field + ".match")
+            try:
+                identifier_pattern(entry["kind"], entry["value"])
+            except (ValueError, KeyError):
+                require(False, field + ".value")
+    elif name == "exceptions.json":
+        require(isinstance(data.get("exceptions"), list), "exceptions")
+        valid = []
+        for entry in data["exceptions"]:
+            try:
+                if not isinstance(entry, dict):
+                    raise ValueError
+                keys = ("label", "op", "command_prefix", "expires") if entry.get("op") == "shell" else (
+                    "label", "origin", "op", "location", "expires")
+                if not all(isinstance(entry.get(k), str) for k in keys):
+                    raise ValueError
+                if entry.get("op") == "shell":
+                    if not entry["command_prefix"].strip() or not _single_command(entry["command_prefix"]):
+                        raise ValueError
+                    _parse_expiry(entry["expires"])
+                    valid.append(entry)
+                    continue
+                if not isinstance(entry.get("path_prefix", "/"), str):
+                    raise ValueError
+                _parse_expiry(entry["expires"])
+                parts = urlsplit(entry["origin"])
+                if parts.scheme not in ("http", "https") or not parts.hostname or parts.username:
+                    raise ValueError
+                _ = parts.port
+            except (ValueError, TypeError):
+                continue
+            valid.append(entry)
+        count = len(data["exceptions"]) - len(valid)
+        if count:
+            warnings.warn(f"exceptions.json: ignored {count} invalid grants", stacklevel=2)
+        data = dict(data, exceptions=valid)
+    elif name == "config.json":
+        if "guard_lock" in data:
+            lock = data["guard_lock"]
+            require(type(lock) is bool or isinstance(lock, dict), "guard_lock")
+            if isinstance(lock, dict):
+                require(type(lock.get("enabled", True)) is bool, "guard_lock.enabled")
+                paths = lock.get("paths", [])
+                require(isinstance(paths, list) and all(isinstance(p, str) for p in paths), "guard_lock.paths")
+        if "secret_file_mode" in data:
+            require(data["secret_file_mode"] in SECRET_FILE_MODES, "secret_file_mode")
+        if "cookies_attended_only" in data:
+            require(type(data["cookies_attended_only"]) is bool, "cookies_attended_only")
+        for key in ("cookie_origins", "mcp_local_tools"):
+            if key in data:
+                require(isinstance(data[key], list) and all(isinstance(v, str) for v in data[key]), key)
+        for i, origin in enumerate(data.get("cookie_origins", [])):
+            try:
+                parts = urlsplit(origin)
+                require(parts.scheme in ("http", "https") and bool(parts.hostname)
+                        and not parts.username, f"cookie_origins[{i}]")
+                _ = parts.port
+            except ValueError:
+                require(False, f"cookie_origins[{i}]")
+        if "local_endpoints" in data:
+            require(isinstance(data["local_endpoints"], list), "local_endpoints")
+            for i, ep in enumerate(data["local_endpoints"]):
+                field = f"local_endpoints[{i}]"
+                require(isinstance(ep, dict), field)
+                require(ep.get("scheme") in ("http", "https"), field + ".scheme")
+                require(isinstance(ep.get("host"), str) and bool(ep["host"]), field + ".host")
+                require(type(ep.get("port")) is int and 0 < ep["port"] <= 65535, field + ".port")
+    return data
+
+
+def _read_policy(name: str, optional: bool = False) -> dict:
     try:
-        config = json.loads((policy_dir() / "config.json").read_text(encoding="utf-8"))
+        data = json.loads((policy_dir() / name).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        if optional:
+            return {"exceptions": []} if name == "exceptions.json" else {}
+        raise PolicyError(f"{name}: file is missing") from None
     except (OSError, ValueError):
-        return {}
-    return config if isinstance(config, dict) else {}
+        raise PolicyError(f"{name}: file could not be read") from None
+    return validate_policy(name, data)
+
+
+def _config() -> dict:
+    return _read_policy("config.json", optional=True)
 
 
 def secret_file_mode() -> str:
@@ -207,7 +313,10 @@ def secret_file_mode() -> str:
     Anything missing or invalid means ``strict``: the owner loosens the mode
     on purpose, never by accident.
     """
-    mode = _config().get("secret_file_mode", "strict")
+    try:
+        mode = _config().get("secret_file_mode", "strict")
+    except PolicyError:
+        return "strict"
     return mode if mode in SECRET_FILE_MODES else "strict"
 
 
@@ -215,6 +324,7 @@ def secret_file_mode() -> str:
 # scripts, and Codex config. Matched anywhere in a path, so every project's
 # .claude/settings.json is covered too.
 GUARD_LOCK_PATHS = (
+    ".mcp.json",
     ".claude/settings.json",
     ".claude/settings.local.json",
     ".claude/hooks/",
@@ -241,21 +351,24 @@ def guard_lock_paths() -> list[str]:
 def guard_lock_state() -> tuple[list[str], str | None]:
     """The locked paths, and why the lock setting couldn't be read, if it couldn't.
 
-    A missing config means the lock is off. A config that exists but can't
+    With valid identifiers, a missing optional config means the lock is off.
+    A config that exists but can't
     be read, or a ``guard_lock`` value that is neither off nor a valid
     lock, fails closed: the built-in paths stay locked and the second item
     names the cause, so the owner can fix it.
     """
     path = policy_dir() / "config.json"
+    try:
+        _read_policy("identifiers.json")
+    except PolicyError as exc:
+        return list(GUARD_LOCK_PATHS), f"{exc} in {policy_dir()}"
     if not path.exists():
         return [], None
     builtin = list(GUARD_LOCK_PATHS)
     try:
-        config = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return builtin, "config.json could not be read"
-    if not isinstance(config, dict):
-        return builtin, "config.json is not a JSON object"
+        config = _config()
+    except PolicyError as exc:
+        return builtin, str(exc)
     lock = config.get("guard_lock", False)
     if lock is False or lock is None:
         return [], None
@@ -283,7 +396,10 @@ def contact_alias() -> str | None:
     The config value matters for long-lived servers started by a client whose
     environment lacks the variable.
     """
-    alias = os.environ.get("SIFTFETCH_CONTACT_ALIAS") or _config().get("contact_alias")
+    try:
+        alias = os.environ.get("SIFTFETCH_CONTACT_ALIAS") or _config().get("contact_alias")
+    except PolicyError:
+        return None
     if not isinstance(alias, str) or alias.count("@") != 1:
         return None
     # A placeholder domain reads as a bot hiding its identity: Unpaywall rejects
@@ -340,7 +456,12 @@ def _email_pattern(value: str) -> re.Pattern:
     at = r"\s*+(?:@|\(at\)|\[at\]|\{at\}|(?<=\s)at(?=\s)|[._-])\s*+"
     dot = r"\s*+(?:\.|\(dot\)|\[dot\]|(?<=\s)dot(?=\s))\s*+"
     domain_pattern = dot.join(re.escape(part) for part in domain.split("."))
-    return re.compile(re.escape(local) + at + domain_pattern, re.IGNORECASE)
+    local_pattern = re.escape(local)
+    if domain.lower() in ("gmail.com", "googlemail.com"):
+        local_pattern = r"\.?".join(re.escape(c) for c in local.replace(".", ""))
+        domain_pattern = r"(?:gmail|googlemail)" + dot + "com"
+    tag = r"(?:\+[^\s@]{1,128})?"
+    return re.compile(local_pattern + tag + at + domain_pattern, re.IGNORECASE)
 
 
 def _phone_pattern(value: str) -> re.Pattern:
@@ -349,8 +470,8 @@ def _phone_pattern(value: str) -> re.Pattern:
         digits = digits[1:]
     if len(digits) != 10:
         raise ValueError("phone identifier needs 10 digits")
-    body = r"[\s.\-()]*+".join(digits)
-    return re.compile(r"(?<!\d)(?:\+?1[\s.\-]*)?\(?" + body + r"(?!\d)")
+    body = r"[\s.\-()/_,]{0,3}".join(digits)
+    return re.compile(body)
 
 
 def _text_pattern(value: str) -> re.Pattern:
@@ -362,6 +483,20 @@ def _text_pattern(value: str) -> re.Pattern:
 
 
 _KIND_PATTERNS = {"email": _email_pattern, "phone": _phone_pattern, "text": _text_pattern}
+
+
+def identifier_pattern(kind: str, value: str, match: str = "auto") -> re.Pattern:
+    """Compile an identifier using the versioned matching API."""
+    if match not in ("auto", "word", "substring"):
+        raise ValueError("unknown match mode")
+    pattern = _KIND_PATTERNS[kind](value)
+    if kind == "text" and (match == "substring" or
+                           match == "auto" and sum(c.isalnum() for c in value) >= 8):
+        return re.compile(_SEP.join(re.escape(t) for t in value.split()), re.IGNORECASE)
+    if match == "word" and kind != "text":
+        return re.compile(r"(?<![A-Za-z0-9])(?:" + pattern.pattern + r")(?![A-Za-z0-9])",
+                          pattern.flags)
+    return pattern
 
 
 # --- policy loading ---------------------------------------------------------
@@ -409,7 +544,7 @@ def _load_policy() -> _Policy:
         if _cached is not None and _cached.mtimes == mtimes:
             return _cached
 
-        raw_ids = json.loads(files[0].read_text(encoding="utf-8"))
+        raw_ids = _read_policy("identifiers.json")
         identifiers = []
         for entry in raw_ids["values"]:
             cls = entry["class"]
@@ -418,30 +553,32 @@ def _load_policy() -> _Policy:
             public = bool(entry.get("public_search", False))
             if public and cls != "soft":
                 raise ValueError("public_search is only allowed on soft identifiers")
-            pattern = _KIND_PATTERNS[entry["kind"]](entry["value"])
+            pattern = identifier_pattern(entry["kind"], entry["value"],
+                                         "word" if cls == "soft" else entry.get("match", "auto"))
             identifiers.append(_Identifier(entry["label"], cls, pattern, public))
 
         grants: list[_Grant] = []
         if mtimes[1] is not None:
-            for entry in json.loads(files[1].read_text(encoding="utf-8")).get("exceptions", []):
+            for entry in _read_policy("exceptions.json")["exceptions"]:
                 try:
                     expires = _parse_expiry(entry["expires"])
                 except (KeyError, ValueError):
                     continue  # an invalid grant is ignored, never widened
                 grants.append(_Grant(
                     label=entry["label"],
-                    origin=_origin_of(entry["origin"]),
+                    origin="" if entry["op"] == "shell" else _origin_of(entry["origin"]),
                     op=entry["op"],
-                    location=entry["location"],
+                    location=entry.get("location", ""),
                     path_prefix=entry.get("path_prefix", "/"),
                     expires=expires,
+                    command_prefix=entry.get("command_prefix", ""),
                 ))
 
         local_endpoints: set[str] = set()
         cookie_origins: set[str] = set()
         attended_only = True
         if mtimes[2] is not None:
-            config = json.loads(files[2].read_text(encoding="utf-8"))
+            config = _config()
             for ep in config.get("local_endpoints", []):
                 local_endpoints.add(_canonical_origin(ep["scheme"], ep["host"], int(ep["port"])))
             cookie_origins = {_origin_of(o) for o in config.get("cookie_origins", [])}
@@ -474,52 +611,128 @@ def login_cookies_allowed(session_kind: str) -> bool:
 
 # --- decoding and matching --------------------------------------------------
 
-def _views(text: str) -> list[str]:
-    """Normalized forms of one location's text that matching runs over."""
-    views = []
-    current = unicodedata.normalize("NFKC", text)
-    views.append(current)
-    for _ in range(2):
-        decoded = unquote(current.replace("+", " "))
-        if decoded == current:
-            break
-        views.append(decoded)
-        current = decoded
-    unescaped = html.unescape(current)
-    if unescaped != current:
-        views.append(unescaped)
-        current = unescaped
-    # Zero-width and other format characters render as nothing, so a value
-    # split by one still reads as the value.
-    stripped = "".join(c for c in current if unicodedata.category(c) != "Cf")
-    if stripped != current:
-        views.append(stripped)
-    # A run may span path segments ("v2/<payload>"), so each slash-separated
-    # piece is tried too.
-    runs = set()
-    for run in _B64_RUN.findall(current):
-        runs.add(run)
-        runs.update(p for p in run.split("/") if len(p) >= 16)
-    for run in runs:
-        padded = run.rstrip("=") + "=" * (-len(run.rstrip("=")) % 4)
-        for decoder in (base64.b64decode, base64.urlsafe_b64decode):
-            try:
-                out = decoder(padded).decode("utf-8")
-            except (binascii.Error, UnicodeDecodeError, ValueError):
-                continue
-            if out.isprintable():
-                views.append(out)
-            break
-    return views
+MAX_DECODE_BYTES = 4 * 1024 * 1024
+
+
+@dataclass
+class DecodeResult:
+    views: list[str]
+    complete: bool
+    _used: int = field(default=0, repr=False)
+
+
+def _normalized(text: str) -> str:
+    text = unicodedata.normalize("NFKC", html.unescape(unquote(text)))
+    return "".join(c for c in text if unicodedata.category(c) != "Cf")
+
+
+def decoded_views(text: str, budget: int | None = None) -> DecodeResult:
+    """Raw and recursively decoded views, bounded to three decoding levels.
+
+    The budget counts decoded candidate bytes, including non-text candidates.
+    Callers must refuse an incomplete result rather than treating it as clean.
+    """
+    limit = MAX_DECODE_BYTES if budget is None else max(0, budget)
+    result = DecodeResult([text], True)
+    seen = {text}
+    pending = [(text, 0)]
+    tried = set()
+
+    def add(value, depth):
+        if value not in seen:
+            seen.add(value)
+            result.views.append(value)
+            pending.append((value, depth))
+
+    for current, depth in pending:
+        if depth >= 3:
+            continue
+        normal = _normalized(current)
+        if normal != current:
+            cost = len(normal.encode("utf-8"))
+            if result._used + cost > limit:
+                result.complete = False
+                return result
+            result._used += cost
+            add(normal, depth + 1)
+        for source in dict.fromkeys((current, normal)):
+            for pattern, encoding in ((_B64_RUN, "base64"),
+                                      (re.compile(r"[0-9a-fA-F]{24,}"), "hex"),
+                                      (re.compile(r"[A-Z2-7]{16,}={0,6}", re.I), "base32")):
+                for match in pattern.finditer(source):
+                    run = match.group()
+                    pieces = [run]
+                    if encoding == "base64":
+                        pieces += [p for p in run.split("/") if len(p) >= 12]
+                    for piece in pieces:
+                        for start in range(0, len(piece), 3072):
+                            candidate = piece[start:start + 4096]
+                            key = (encoding, candidate)
+                            if key in tried:
+                                continue
+                            tried.add(key)
+                            try:
+                                if encoding == "hex":
+                                    if len(candidate) % 2:
+                                        continue
+                                    raw = bytes.fromhex(candidate)
+                                elif encoding == "base32":
+                                    candidate = candidate.rstrip("=")
+                                    raw = base64.b32decode(candidate + "=" * (-len(candidate) % 8), casefold=True)
+                                else:
+                                    candidate = candidate.rstrip("=")
+                                    raw = base64.b64decode(candidate + "=" * (-len(candidate) % 4), altchars=b"-_")
+                            except (ValueError, binascii.Error):
+                                continue
+                            result._used += len(raw)
+                            if result._used > limit:
+                                result.complete = False
+                                return result
+                            try:
+                                decoded = raw.decode("utf-8")
+                            except UnicodeDecodeError:
+                                continue
+                            clean = "".join(c for c in decoded if ord(c) >= 32 and
+                                            unicodedata.category(c) != "Cf")
+                            if clean and sum(c.isprintable() for c in clean) / len(clean) >= .85:
+                                add(decoded, depth + 1)
+                                add(clean, depth + 1)
+    return result
+
+
+def _location_texts(location: str, text: str):
+    yield text
+    leaves = []
+    if location == "body":
+        try:
+            def walk(value):
+                if isinstance(value, str):
+                    leaves.append(value)
+                elif isinstance(value, dict):
+                    for item in value.values():
+                        walk(item)
+                elif isinstance(value, list):
+                    for item in value:
+                        walk(item)
+            walk(json.loads(text))
+        except (ValueError, RecursionError):
+            pass
+    elif location.startswith(("header:", "param:")):
+        leaves.append(text)
+    for leaf in leaves:
+        yield leaf
+        if len(leaf) < 64 * 1024:
+            normal = _normalized(leaf)
+            yield re.sub(r"[^A-Za-z0-9+/_=-]", "", normal)
 
 
 def _credential_in(text: str) -> bool:
-    return any(p.search(v) for v in _views(text) for p in _CREDENTIAL_PATTERNS)
+    return any(p.search(v) for v in decoded_views(text).views for p in _CREDENTIAL_PATTERNS)
 
 
 def _identifiers_in(text: str, policy: _Policy) -> list[_Identifier]:
     found = []
-    views = _views(text)
+    views = decoded_views(text).views
     for ident in policy.identifiers:
         if any(ident.pattern.search(v) for v in views):
             found.append(ident)
@@ -558,22 +771,58 @@ def _granted(policy: _Policy, ident: _Identifier, location: str, origin: str,
     )
 
 
+def _single_command(command: str) -> bool:
+    return not re.search(r"[;|<>&`\r\n]|\$\(", command)
+
+
+def _shell_granted(policy: _Policy, ident: _Identifier, command: str) -> bool:
+    if not _single_command(command):
+        return False
+    command = command.strip()
+    return any(g.op == "shell" and g.label == ident.label and g.command_prefix
+               and command.startswith(g.command_prefix)
+               and (len(command) == len(g.command_prefix) or command[len(g.command_prefix)].isspace())
+               and g.expires > datetime.now(timezone.utc) for g in policy.grants)
+
+
 # --- decisions --------------------------------------------------------------
 
 def _decide(locations: list[tuple[str, str]], *, policy: _Policy, op: str,
-            origin: str | None, path: str, session_kind: str, chrome: bool) -> Decision:
+            origin: str | None, path: str, session_kind: str, interactive_ask: bool,
+            exact_only: bool = False, command: str | None = None) -> Decision:
     """Decide every occurrence; the first deny wins, then any ask."""
     asks: list[Decision] = []
+    sensitive_host = False
+    remaining = MAX_DECODE_BYTES
+    cache = {}
     for location, text in locations:
         if not text:
             continue
-        if _credential_in(text):
+        views = []
+        for candidate in _location_texts(location, text):
+            if candidate not in cache:
+                decoded = decoded_views(candidate, remaining)
+                if not decoded.complete:
+                    return Decision("deny", "could_not_check")
+                remaining -= decoded._used
+                cache[candidate] = decoded.views
+            views.extend(cache[candidate])
+        if any(p.search(v) for v in views for p in _CREDENTIAL_PATTERNS):
             return Decision("deny", "credential")
-        for ident in _identifiers_in(text, policy):
+        for ident in policy.identifiers:
+            if exact_only and ident.cls == "soft":
+                continue
+            if not any(ident.pattern.search(v) for v in views):
+                continue
+            sensitive_host |= location == "host"
+            if op == "shell" and command is not None and _shell_granted(policy, ident, command) and all(
+                    other.label == ident.label or not any(other.pattern.search(v) for v in views)
+                    for other in policy.identifiers):
+                continue
             if ident.cls == "exact":
                 if origin is not None and _granted(policy, ident, location, origin, op, path):
                     continue
-                if chrome and session_kind == "attended":
+                if interactive_ask and session_kind == "attended":
                     asks.append(Decision("ask", "protected_value", ident.label))
                     continue
                 return Decision("deny", "protected_value", ident.label)
@@ -583,7 +832,7 @@ def _decide(locations: list[tuple[str, str]], *, policy: _Policy, op: str,
                 asks.append(Decision("ask", "soft_identifier", ident.label))
                 continue
             return Decision("deny", "soft_identifier", ident.label)
-    return asks[0] if asks else ALLOW
+    return asks[0] if asks else Decision("allow", sensitive_host=sensitive_host)
 
 
 def _url_locations(url: str) -> tuple[list[tuple[str, str]], str, str, bool] | Decision:
@@ -616,7 +865,8 @@ def _url_locations(url: str) -> tuple[list[tuple[str, str]], str, str, bool] | D
     if len(names) != len(set(names)):
         ambiguous = True
     locations = [("host", parts.hostname), ("path", unquote(parts.path))]
-    locations += [(f"param:{name}", f"{name}={value}") for name, value in params]
+    locations += [(f"param:{name}", value) for name, value in params]
+    locations += [("param-name", name) for name, _ in params]
     if ambiguous:
         locations.append(("query", parts.query))
     locations.append(("fragment", parts.fragment))
@@ -648,23 +898,20 @@ def resolve_public(host: str, port: int) -> list[str] | Decision:
 def _host_for_log(host: str | None, decision: Decision) -> str | None:
     """The host, or its hash when it may hold a protected value.
 
-    The host is scanned on its own, because some decisions (an ambiguous
-    request, an oversized one) are made before any value matching. If the
-    scan can't run, the host is hashed.
+    Reuse the host sensitivity retained by matching. Rejections made before
+    matching also hash the host, without running a second decode pass.
     """
     if not host:
         return host
-    try:
-        hidden = bool(decision.label) or _credential_in(host) or bool(
-            _identifiers_in(host, _load_policy()))
-    except Exception:
-        hidden = True
+    hidden = decision.sensitive_host or bool(decision.label) or decision.action != "allow"
     if hidden:
         return "sha256:" + hashlib.sha256(host.encode("utf-8")).hexdigest()[:16]
     return host
 
 
 def _logged(decision: Decision, *, tool: str, op: str, host: str | None) -> Decision:
+    if decision.action == "allow" and (op == "shell" or tool.startswith("mcp__")):
+        return decision
     host = _host_for_log(host, decision)
     record = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -678,7 +925,8 @@ def _logged(decision: Decision, *, tool: str, op: str, host: str | None) -> Deci
     }
     try:
         base = policy_dir()
-        base.mkdir(parents=True, exist_ok=True)
+        if not base.is_dir():
+            return decision
         with (base / "egress-decisions.jsonl").open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record) + "\n")
     except OSError:
@@ -693,6 +941,8 @@ def _guarded(fn, *, tool: str, op: str, host: str | None, size: int,
     else:
         try:
             decision = fn(_load_policy())
+        except PolicyError as exc:
+            decision = Decision("deny", "policy_unavailable", str(exc))
         except Exception:
             decision = Decision("deny", "policy_unavailable")
     return _logged(decision, tool=tool, op=op, host=host) if log else decision
@@ -700,7 +950,8 @@ def _guarded(fn, *, tool: str, op: str, host: str | None, size: int,
 
 def check_url(url: str, *, op: str = "fetch", tool: str = "siftfetch",
               session_kind: str = "unattended", chrome: bool = False,
-              extra: list[tuple[str, str]] | None = None) -> Decision:
+              extra: list[tuple[str, str]] | None = None,
+              resolve_host: bool = False) -> Decision:
     """Check one outbound URL, plus optional header/body locations."""
     try:
         host = urlsplit(url).hostname
@@ -720,14 +971,24 @@ def check_url(url: str, *, op: str = "fetch", tool: str = "siftfetch",
             # No grant applies (it names one field, and a repeated field is
             # read either way), and any match is refused rather than asked.
             decision = _decide(locations + (extra or []), policy=policy, op=op, origin=None,
-                               path=path, session_kind=session_kind, chrome=False)
-            if decision.reason_code == "credential":
+                               path=path, session_kind=session_kind, interactive_ask=False)
+            if decision.reason_code in ("credential", "could_not_check"):
                 return decision
             if decision.action != "allow":
                 return Decision("deny", "ambiguous_request", decision.label)
+            if resolve_host and origin not in policy.local_endpoints:
+                parts = urlsplit(url)
+                destination = _hook_destination(host, parts.port or (443 if parts.scheme == "https" else 80))
+                return decision if destination.action == "allow" else destination
             return decision
-        return _decide(locations + (extra or []), policy=policy, op=op, origin=origin,
-                       path=path, session_kind=session_kind, chrome=chrome)
+        decision = _decide(locations + (extra or []), policy=policy, op=op, origin=origin,
+                           path=path, session_kind=session_kind, interactive_ask=chrome)
+        if decision.action != "allow":
+            return decision
+        if resolve_host and origin not in policy.local_endpoints:
+            destination = _hook_destination(host, urlsplit(url).port or (443 if url.startswith("https:") else 80))
+            return decision if destination.action == "allow" else destination
+        return decision
 
     return _guarded(run, tool=tool, op=op, host=host, size=len(url) + _size(extra))
 
@@ -744,33 +1005,97 @@ def check_search(query: str, *, tool: str = "siftfetch",
                  session_kind: str = "unattended") -> Decision:
     def run(policy: _Policy) -> Decision:
         return _decide([("query", query)], policy=policy, op="search", origin=None,
-                       path="/", session_kind=session_kind, chrome=False)
+                       path="/", session_kind=session_kind, interactive_ask=False)
 
     return _guarded(run, tool=tool, op="search", host=None, size=len(query))
 
 
 def check_text(text: str, *, op: str = "api", tool: str, session_kind: str,
-               chrome: bool = False, log: bool = True) -> Decision:
+               chrome: bool = False, log: bool = True, exact_only: bool = False,
+               interactive_ask: bool = False) -> Decision:
     """Check free text (a shell command, a browser action) as one location.
 
-    Grants never apply: free text cannot be parsed reliably enough to bind a
-    grant to one field at one origin. ``log=False`` skips the decision log,
+    Only restricted shell-prefix grants apply to shell operations; origin
+    grants cannot be bound to free text. ``log=False`` skips the decision log,
     for checks of local files that are not outbound requests.
     """
     def run(policy: _Policy) -> Decision:
         return _decide([("text", text)], policy=policy, op=op, origin=None, path="/",
-                       session_kind=session_kind, chrome=chrome)
+                       session_kind=session_kind, interactive_ask=chrome or interactive_ask, exact_only=exact_only,
+                       command=text if op == "shell" else None)
 
     return _guarded(run, tool=tool, op=op, host=None, size=len(text), log=log)
 
+
+
+def check_mcp(payload: dict, *, tool: str, session_kind: str) -> Decision:
+    """Check string leaves under one shared budget, including URL locations."""
+    browser_driver = tool.startswith(("mcp__claude-in-chrome__", "mcp__Claude_Browser__"))
+    locations = []
+    urls = []
+    soft = False
+
+    def walk(value):
+        nonlocal soft
+        if isinstance(value, str):
+            locations.append(("header:mcp-leaf", value))
+            if value.startswith(("http://", "https://")):
+                urls.append(value)
+        elif isinstance(value, dict):
+            soft |= any(str(k).lower().endswith(("url", "recipient", "email", "body")) for k in value)
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+    walk(payload)
+
+    def run(policy):
+        for url in urls:
+            parsed = _url_locations(url)
+            if isinstance(parsed, Decision):
+                return parsed
+            parts, origin, _, _ = parsed
+            locations.extend(parts)
+            if not browser_driver and origin not in policy.local_endpoints and _literal_private(urlsplit(url).hostname):
+                return Decision("deny", "private_destination")
+        return _decide(locations, policy=policy, op="mcp", origin=None, path="/",
+                       session_kind=session_kind, interactive_ask=True, exact_only=not soft)
+
+    return _guarded(run, tool=tool, op="mcp", host=None, size=_size(locations))
 
 def _literal_private(host: str | None) -> bool:
     if not host:
         return False
     try:
+        host = socket.inet_ntoa(socket.inet_aton(host))
+    except OSError:
+        pass
+    try:
         return _is_private(host)
     except ValueError:
         return host.lower().rstrip(".") in ("localhost",) or host.lower().endswith(".localhost")
+
+
+_HOOK_DNS_TIMEOUT = 1.0
+
+
+def _hook_destination(host: str, port: int) -> Decision:
+    result = []
+    done = threading.Event()
+
+    def resolve():
+        try:
+            result.append(resolve_public(host, port))
+        except Exception:
+            pass
+        finally:
+            done.set()
+
+    threading.Thread(target=resolve, daemon=True).start()
+    if not done.wait(_HOOK_DNS_TIMEOUT) or not result or not result[0]:
+        return Decision("deny", "destination_unconfirmed")
+    return result[0] if isinstance(result[0], Decision) else ALLOW
 
 
 def _size(extra: list[tuple[str, str]] | None) -> int:

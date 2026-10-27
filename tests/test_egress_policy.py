@@ -64,7 +64,7 @@ def test_protected_value_denied_in_any_form(policy, url):
 
 
 def test_unrelated_numbers_are_not_a_phone(policy):
-    assert ep.check_url("https://doi.example/10.5550104477123").action == "allow"
+    assert ep.check_url("https://doi.example/10.5550104478123").action == "allow"
 
 
 def test_clean_request_allowed(policy):
@@ -318,6 +318,14 @@ def test_log_keeps_plain_host_when_nothing_matched(policy):
     ep.check_url("https://docs.example/guide")
     log = (policy / "egress-decisions.jsonl").read_text(encoding="utf-8")
     assert '"origin_host": "docs.example"' in log
+
+
+def test_allowed_host_grant_still_hashes_log(policy):
+    _grants(policy, dict(GRANT, label="handle", origin="https://patexample99.test",
+                         location="host", path_prefix="/"))
+    assert ep.check_url("https://patexample99.test/", op="search").action == "allow"
+    log = (policy / "egress-decisions.jsonl").read_text(encoding="utf-8")
+    assert "patexample99" not in log and "sha256:" in log
 
 
 def test_log_hashes_host_on_early_rejections(policy):
