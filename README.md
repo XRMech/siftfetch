@@ -23,4 +23,5 @@ SiftFetch cleans incoming web content: hidden-text stripping, injection scanning
 | [Writing](docs/writing-docs.md) | Change docs |
 | [Release](RELEASING.md) | Prepare publication |
 | [Security](SECURITY.md) | Report a vulnerability |
+| [Contributing](CONTRIBUTING.md) | Open an issue or pull request |
 | [Agent map](AGENTS.md) | Start repository work |
