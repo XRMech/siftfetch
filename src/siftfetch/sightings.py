@@ -67,7 +67,7 @@ def _process_lock(base):
     try:
         if os.fstat(fd).st_size == 0:
             os.write(fd, b"\0")
-        deadline = time.monotonic() + 0.5
+        deadline = time.monotonic() + 2.0
         while not acquired:
             try:
                 if sys.platform == "win32":
@@ -91,6 +91,19 @@ def _process_lock(base):
             else:
                 fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+
+
+def _retry_in_use(action):
+    """Windows refuses to rename or open a file another process (often a
+    virus scanner) briefly holds; retry for up to half a second."""
+    deadline = time.monotonic() + 0.5
+    while True:
+        try:
+            return action()
+        except PermissionError:
+            if sys.platform != "win32" or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
 
 
 def record(scan, *, url="", tool="label"):
@@ -121,9 +134,10 @@ def record(scan, *, url="", tool="label"):
                 _safe_paths(base)
                 path = base / "sightings.jsonl"
                 if path.exists() and path.stat().st_size + len(encoded) > cap:
-                    os.replace(path, base / "sightings.1.jsonl")
-                fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY | getattr(os, "O_BINARY", 0)
-                             | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                    _retry_in_use(lambda: os.replace(path, base / "sightings.1.jsonl"))
+                fd = _retry_in_use(lambda: os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY
+                                                   | getattr(os, "O_BINARY", 0)
+                                                   | getattr(os, "O_NOFOLLOW", 0), 0o600))
                 with os.fdopen(fd, "ab") as stream:
                     stream.write(encoded)
     except Exception:
