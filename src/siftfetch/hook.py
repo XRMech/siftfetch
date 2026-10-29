@@ -555,7 +555,7 @@ def _recursive_read(command: str, cwd: str, depth: int = 0, check_env: bool = Tr
     for segment in _segments(command):
         cd = _CD.match(segment)
         if cd:
-            cwd = _resolve((cd[1] or "~").strip(), cwd)
+            cwd = _fs_path((cd[1] or "~").strip(), cwd)
             continue
         spec = _recursive_spec(segment)
         if spec is None:
@@ -565,6 +565,7 @@ def _recursive_read(command: str, cwd: str, depth: int = 0, check_env: bool = Tr
             continue
         home = _policy_home()
         for root in roots:
+            scan_root = _fs_path(root, cwd)
             root = _resolve(root, cwd)
             if root.startswith("//"):
                 return "UNC paths can't be checked; use the drive-letter path"
@@ -572,7 +573,7 @@ def _recursive_read(command: str, cwd: str, depth: int = 0, check_env: bool = Tr
                 return _TAMPER + " Exclude the policy folder from the recursive search."
             if excluded or not check_env:
                 continue
-            stack, entries = [(root, 0)], 0
+            stack, entries = [(scan_root, 0)], 0
             while stack:
                 folder, level = stack.pop()
                 try:
@@ -736,6 +737,14 @@ def _resolve(token: str, cwd: str) -> str:
     path = re.sub(r"^[\\/]{2}[?.][\\/](?=[a-zA-Z]:)", "", path)
     path = os.path.normpath(os.path.join(cwd, path)).replace("\\", "/")
     return _canonical(re.sub(r"/{2,}", "/", path).lower()).rstrip("/")
+
+
+def _fs_path(token: str, cwd: str) -> str:
+    """The path to open: _resolve without its lowercasing, which only suits
+    comparisons and would miss folders on a case-sensitive file system."""
+    path = _path_identity(_expand(token.strip("'\"")))
+    path = re.sub(r"^[\\/]{2}[?.][\\/](?=[a-zA-Z]:)", "", path)
+    return os.path.normpath(os.path.join(cwd, path))
 
 
 def _is_locked(path: str, locked: list[str]) -> str | None:

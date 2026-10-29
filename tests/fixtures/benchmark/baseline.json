@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "patterns_version": "inj-7",
-  "corpus_hash": "139aed39277bdf11df4ff364e9f5601886722f15d0afe68bedbbea96d142e6f4",
+  "corpus_hash": "3bfd74a126000c3da1f95b48c471e66863b4ab5cfc213b3b7d195958d6302bec",
   "case_count": 113,
   "metrics": {
     "detection": {

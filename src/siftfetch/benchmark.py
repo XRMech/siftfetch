@@ -30,7 +30,8 @@ def _load(directory):
     cases = json.loads(manifest)
     if not isinstance(cases, list) or not cases:
         raise ValueError("cases.json must be a nonempty array")
-    digest = hashlib.sha256(manifest)
+    # Hashes use LF line endings, so a CRLF checkout measures the same corpus.
+    digest = hashlib.sha256(manifest.replace(b"\r\n", b"\n"))
     seen, files, loaded = set(), set(), []
     for case in cases:
         if case["id"] in seen or case["file"] in files:
@@ -60,7 +61,8 @@ def _load(directory):
             if not isinstance(case[key], list) or any(not isinstance(s, str) or not s for s in case[key]):
                 raise ValueError("span expectations must be nonempty strings")
         data = path.read_bytes()
-        digest.update(case["file"].encode() + b"\0" + len(data).to_bytes(8, "big") + data)
+        lf = data.replace(b"\r\n", b"\n")
+        digest.update(case["file"].encode() + b"\0" + len(lf).to_bytes(8, "big") + lf)
         raw = data.decode("utf-8")
         for span in case["must_not_survive"]:
             if span not in raw:

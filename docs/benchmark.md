@@ -34,7 +34,7 @@ The runner uses `clean_html` defaults (auto extraction, 30,000 characters, metad
 | Flagged spans | Offsets/categories in scanner input after escaping; detections also describe hidden regions |
 | Spotlight/envelope | Actual paragraph marks and envelope boundaries present in output |
 | Before cleaning | Same scanner on literal source HTML, without hidden extraction; an informational counterfactual, not equivalent rendered prose |
-| Patterns/hash | Pattern version plus SHA-256 of manifest bytes and ordered filenames, byte lengths and case bytes; baseline excluded |
+| Patterns/hash | Pattern version plus SHA-256 of manifest bytes and ordered filenames, byte lengths and case bytes, with CRLF read as LF; baseline excluded |
 
 JSON includes cases, outputs and aggregates. Timestamps vary; hashes and metrics do not. Empty denominators yield null rates. Hidden checks include link titles.
 

@@ -232,7 +232,8 @@ def test_encoded_shell_reads(invoke):
                                     "Get-ChildItem . -Recurse | Select-String foo",
                                     "Get-ChildItem . -Recurse | Get-Content"])
 def test_recursive_reads(invoke, tmp_path, command):
-    work = tmp_path / "work"
+    # Mixed case: on a case-sensitive file system the walk must open the real name.
+    work = tmp_path / "Work"
     work.mkdir()
     (work / ".env").touch()
     result = invoke("PowerShell", cwd=work, command=command)

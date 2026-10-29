@@ -168,12 +168,36 @@ class _PinnedBackend(httpcore.SyncBackend):
     def __init__(self) -> None:
         super().__init__()
         self.pins: dict[str, str] = {}
+        # Duplicate handles, so the watchdog can shut a connection down:
+        # closing a socket from another thread doesn't wake a blocked read
+        # on macOS, but shutdown does on every platform.
+        self.sockets: list[socket.socket] = []
+        self.aborted = False
 
     def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
         address = self.pins.get(host)
         if address is None:
             raise httpcore.ConnectError(f"{host} was not checked by the egress policy")
-        return super().connect_tcp(address, port, timeout, local_address, socket_options)
+        stream = super().connect_tcp(address, port, timeout, local_address, socket_options)
+        sock = stream.get_extra_info("socket")
+        if sock is not None:
+            self.sockets.append(sock.dup())
+            if self.aborted:
+                self.abort()
+        return stream
+
+    def abort(self) -> None:
+        self.aborted = True
+        for sock in list(self.sockets):
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def release(self) -> None:
+        for sock in self.sockets:
+            sock.close()
+        self.sockets.clear()
 
 
 class _PinnedTransport(httpx.HTTPTransport):
@@ -391,20 +415,29 @@ def _read_capped(resp: httpx.Response, deadline: float) -> bytes:
 
 
 @contextlib.contextmanager
-def _watchdog(client: httpx.Client, deadline: float | None) -> Iterator[None]:
-    """Close ``client`` at ``deadline``; closing its sockets ends a blocked read."""
+def _watchdog(client: httpx.Client, backend: _PinnedBackend, deadline: float | None) -> Iterator[None]:
+    """At ``deadline`` shut down ``backend``'s sockets and close ``client``; that ends a blocked read."""
     if deadline is None:
-        yield
+        try:
+            yield
+        finally:
+            backend.release()
         return
+
+    def expire() -> None:
+        backend.abort()
+        client.close()
+
     # Windows timer waits can end ~15 ms early; firing a little after the
     # deadline lets callers tell this close apart from a real network error.
-    timer = threading.Timer(max(0.0, deadline - time.monotonic()) + 0.05, client.close)
+    timer = threading.Timer(max(0.0, deadline - time.monotonic()) + 0.05, expire)
     timer.daemon = True
     timer.start()
     try:
         yield
     finally:
         timer.cancel()
+        backend.release()
 
 
 @contextlib.contextmanager
@@ -446,7 +479,7 @@ def checked_response(url: str, *, browser: str = "none", timeout: float = _TIMEO
     start_origin = egress_policy._origin_of(url)
     on_start_origin = True
     with httpx.Client(transport=_PinnedTransport(backend), follow_redirects=False,
-                      timeout=httpx_timeout) as client, _watchdog(client, deadline):
+                      timeout=httpx_timeout) as client, _watchdog(client, backend, deadline):
         for _ in range(_MAX_REDIRECTS + 1):
             if deadline is not None and time.monotonic() >= deadline:
                 raise httpx.ReadTimeout("total fetch deadline passed")
