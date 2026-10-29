@@ -8,7 +8,7 @@ import re
 from siftfetch import egress_policy as ep
 
 ROOT = Path(__file__).resolve().parents[1]
-DOCS = [ROOT / name for name in ('README.md', 'SETUP.md', 'AGENTS.md', 'llms.txt', 'RELEASING.md')]
+DOCS = [ROOT / name for name in ('README.md', 'SETUP.md', 'AGENTS.md', 'llms.txt', 'RELEASING.md', 'SECURITY.md')]
 DOCS += sorted((ROOT / 'docs').rglob('*.md'))
 
 
