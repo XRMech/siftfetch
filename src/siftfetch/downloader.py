@@ -3,11 +3,14 @@
 The guarded replacement for ``curl -o``: every hop passes the egress policy
 (through ``fetcher.checked_response``), the size and time limits are set by
 the service, the file name is chosen by the service, and nothing downloaded
-is ever executed or extracted here.
+is ever executed. Archives are not unpacked; optional PDF text extraction
+feeds the same scanner used for text downloads.
 """
 
 import hashlib
+import io
 import json
+import logging
 import os
 import secrets
 import time
@@ -48,10 +51,10 @@ class DownloadRejected(ValueError):
 def _safe_dir(staging_dir: Path) -> Path:
     """The downloads dir, refusing any symlink or junction on the way to it."""
     downloads = staging_dir / "downloads"
-    downloads.mkdir(parents=True, exist_ok=True)
-    for path in (downloads, staging_dir):
+    for path in (downloads, staging_dir, *staging_dir.absolute().parents):
         if is_link(path):
             raise DownloadRejected("unsafe_staging", f"{path.name} is a link or junction.")
+    downloads.mkdir(parents=True, exist_ok=True)
     return downloads
 
 
@@ -92,7 +95,16 @@ def _validate(expect: str, data: bytes, content_type: str) -> None:
         raise DownloadRejected("type_mismatch", f"Content is not valid {expect}.")
 
 
-def _scan_download(data: bytes, expect: str, content_type: str) -> dict:
+def _scan_download(data: bytes, expect: str, content_type: str, url: str = "") -> dict:
+    if expect == "pdf" or data.startswith(b"%PDF-"):
+        text, status = _pdf_text(data)
+        if text is None:
+            return {"risk": "not scanned", "complete": False, "scan_status": status}
+        from siftfetch.tools import label
+        _, scan = label(text, url=url, tool="download_to_staging", complete=status == "scanned")
+        return {"risk": scan.risk, "complete": scan.complete, "scan_status": status,
+                "patterns_version": scan.patterns_version, "categories": list(scan.categories),
+                "hidden_categories": list(scan.hidden_categories)}
     sample = data[:TEXT_SCAN_BYTES]
     try:
         text = sample.decode(_charset(content_type), errors="replace")
@@ -105,8 +117,10 @@ def _scan_download(data: bytes, expect: str, content_type: str) -> dict:
         and "\ufffd" not in sniff)
     if expect not in ("html", "text", "json", "xml") and not looks_text:
         return {"risk": "not scanned", "complete": False, "scan_status": "not scanned"}
-    hidden = injection_scan.hidden_texts(text) if expect == "html" or "<" in text else []
-    _, scan = injection_scan.scan_text(text, hidden)
+    from siftfetch.tools import label
+    _, scan = label(text, text if expect == "html" or "<" in text else "",
+                    url=url, tool="download_to_staging",
+                    complete=len(data) <= TEXT_SCAN_BYTES and "\ufffd" not in text)
     complete = len(data) <= TEXT_SCAN_BYTES and scan.complete and "\ufffd" not in text
     incomplete_text = not complete and expect in ("html", "text", "json", "xml")
     reason = {}
@@ -117,6 +131,43 @@ def _scan_download(data: bytes, expect: str, content_type: str) -> dict:
             "scan_status": "scanned" if complete else "partially scanned",
             "patterns_version": scan.patterns_version,
             "categories": list(scan.categories), "hidden_categories": list(scan.hidden_categories)}
+
+
+def _pdf_text(data: bytes) -> tuple[str | None, str]:
+    """Optional extraction shared by staged downloads and the shell adapter."""
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return None, "text not scanned (no PDF extractor)"
+    # pypdf logs a warning per odd font; on stdio MCP that is noise, not news.
+    logging.getLogger("pypdf").setLevel(logging.ERROR)
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        chunks, size = [], 0
+        for page in reader.pages:
+            chunk = page.extract_text() or ""
+            size += len(chunk)
+            if size > TEXT_SCAN_BYTES:
+                remaining = max(0, TEXT_SCAN_BYTES - (size - len(chunk)))
+                return "\n\f\n".join([*chunks, chunk[:remaining]]), "partially scanned"
+            chunks.append(chunk)
+        text = "\n\f\n".join(chunks)
+        return text, "scanned" if text.strip() else "text extraction empty (no OCR)"
+    except Exception:
+        # Same outcome as a missing extractor: saved and reported as not scanned.
+        return None, "text not scanned (PDF text extraction failed)"
+
+
+def _quarantine_bytes(data: bytes, staging_dir: Path, extension: str, metadata: dict) -> Path:
+    """Use the download quarantine with exclusive, non-following writes."""
+    _safe_dir(staging_dir)
+    folder = _safe_folder(staging_dir, "quarantine")
+    path = folder / f"{hashlib.sha256(data).hexdigest()[:16]}-{secrets.token_hex(4)}.{extension}"
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o600)
+    with os.fdopen(fd, "wb") as out:
+        out.write(data)
+    _write_new(path.with_name(path.name + ".siftfetch.json"), json.dumps(metadata, ensure_ascii=True))
+    return path
 
 
 def download_to_staging(url: str, staging_dir: Path, expect: str,
@@ -164,7 +215,7 @@ def download_to_staging(url: str, staging_dir: Path, expect: str,
                 raise
         data = part.read_bytes()
         _validate(expect, data, content_type)
-        scan = _scan_download(data, expect, content_type)
+        scan = _scan_download(data, expect, content_type, url)
         sha = digest.hexdigest()
         quarantined = scan["risk"] in injection_scan.QUARANTINE_RISKS
         folder = _safe_folder(Path(staging_dir), "quarantine") if quarantined else downloads

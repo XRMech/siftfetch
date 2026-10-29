@@ -8,8 +8,9 @@ import sys
 from pathlib import Path
 
 import pytest
+import siftfetch
 
-SRC = Path(__file__).resolve().parents[1] / "src"
+SRC = Path(siftfetch.__file__).resolve().parents[1]
 HOOK = SRC / "siftfetch" / "hook.py"
 EMAIL = "pat.example@mailhost.test"
 
@@ -51,6 +52,7 @@ def run(payload, policy_dir, *args, headless=False, src=SRC):
     if headless:
         env["AGENT_HEADLESS"] = "1"
     runner = ("import socket,runpy,sys; "
+              "socket.getfqdn=lambda *a: socket.gethostname(); "
               "socket.getaddrinfo=lambda *a,**k: [(0,0,0,'',('93.184.216.34',443))]; "
               "runpy.run_path(sys.argv.pop(1),run_name='__main__')")
     out = subprocess.run([sys.executable, "-c", runner, str(HOOK), *args], input=json.dumps(payload),
@@ -73,7 +75,7 @@ def test_webfetch_with_email_denied(policy_dir):
 def test_clean_calls_produce_no_decision(policy_dir):
     assert run(call("WebFetch", url="https://docs.example/a", prompt="x"), policy_dir) is None
     assert run(call("WebSearch", query="httpx transports"), policy_dir) is None
-    assert run(call("Bash", command="curl -s https://api.example/x"), policy_dir) is None
+    assert run(call("Bash", command="curl -s https://api.example/x"), policy_dir) == "allow"
     assert run(call("Bash", command=f"echo {EMAIL} > notes.txt"), policy_dir) == "deny"
     assert run(call("Read", file_path="C:/x"), policy_dir) is None
 

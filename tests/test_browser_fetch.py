@@ -102,6 +102,13 @@ def _fake_playwright(monkeypatch, html_size, content="<html><body>ok</body></htm
         def __enter__(self): return self
         def __exit__(self, *a): return False
 
+    class Proxy:
+        launch_args = []
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+
+    monkeypatch.setattr(bf.egress_proxy, "EgressProxy", Proxy)
+
     module = types.ModuleType("playwright.sync_api")
     module.Error = Error
     module.sync_playwright = PW

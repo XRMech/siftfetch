@@ -37,6 +37,7 @@ async def fetch_url(
     section: str | None = None,
     extract: str = "auto",
     show_browser: bool = False,
+    spotlight: str | None = None,
 ) -> str:
     """Fetch a URL from this machine and return cleaned, labeled Markdown.
 
@@ -59,10 +60,11 @@ async def fetch_url(
             comes back thin, or a doc site's notes are missing, retry "raw".
         show_browser: True reads the page in a visible browser window, when
             the owner asks to watch. Needs browser_fetch turned on.
+        spotlight: paragraph (default from config), words, or off.
     """
     return await _network_result(
         lambda: fetch_url_sync(url, browser, max_chars, offset, mode, section, extract,
-                               show_browser, session_kind()), "Fetch", url
+                               show_browser, session_kind(), spotlight), "Fetch", url
     )
 
 
@@ -102,7 +104,7 @@ async def fetch_and_save(url: str, name: str, browser: str = "none",
 
 @mcp.tool()
 async def download_to_staging(url: str, expect: str, max_bytes: int = 50_000_000) -> dict | str:
-    """Download a file (PDF, HTML, text, JSON, XML or zip) into the data folder.
+    """Download a file into the configured download root (data folder by default).
 
     Use this instead of curl/Invoke-WebRequest. Every redirect passes the
     same privacy policy as fetch_url, the server picks the file name, and the
@@ -118,6 +120,20 @@ async def download_to_staging(url: str, expect: str, max_bytes: int = 50_000_000
 async def list_sessions() -> list[dict]:
     """Say whether browser logins (Chrome, Edge) are usable here, and for which origins."""
     return await anyio.to_thread.run_sync(list_sessions_sync)
+
+
+@mcp.tool()
+async def get_substitute(kind: str | None = None) -> dict[str, str]:
+    """Read approved name, email, phone, postal_address or organization; omit kind for all."""
+    from siftfetch import tools
+    return await anyio.to_thread.run_sync(lambda: tools.get_substitute(kind))
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False})
+async def policy_status() -> dict:
+    """Read redacted policy status: counts and safe settings, never protected values."""
+    from siftfetch import tools
+    return await anyio.to_thread.run_sync(tools.policy_status)
 
 
 def main() -> None:

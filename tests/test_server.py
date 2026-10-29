@@ -34,7 +34,7 @@ def _serve(monkeypatch, html: str):
 def test_tools_are_registered():
     names = {t.name for t in anyio.run(server.mcp.list_tools)}
     assert names == {"fetch_url", "search_web", "fetch_and_save", "download_to_staging",
-                     "list_sessions"}
+                     "list_sessions", "get_substitute", "policy_status"}
 
 
 def test_clean_page_is_saved_and_recorded(data, monkeypatch):
@@ -138,6 +138,35 @@ def test_fetch_url_wraps_the_page(monkeypatch):
     monkeypatch.setattr(tools.browser_fetch, "wanted", lambda url, walled: False)
     out = server.fetch_url_sync("https://evil.example/p")
     assert "untrusted" in out.lower() and "high" in out
+
+
+def _serve_bytes(monkeypatch, body: bytes, content_type: str):
+    response = SimpleNamespace(content=body, text=body.decode("latin-1"), status_code=200,
+                               headers={"content-type": content_type})
+    monkeypatch.setattr(tools, "fetch", lambda url, **kw: response)
+    monkeypatch.setattr(tools.browser_fetch, "wanted", lambda url, walled: False)
+
+
+def test_fetch_url_reads_pdf_text_not_raw_streams(monkeypatch):
+    from siftfetch import downloader
+    # CDNs often send PDFs as octet-stream; the magic bytes decide.
+    _serve_bytes(monkeypatch, b"%PDF-1.7\n\x00\xff stream x\x9c\xe2 endstream", "binary/octet-stream")
+    monkeypatch.setattr(downloader, "_pdf_text", lambda data: (HOSTILE, "scanned"))
+    out = server.fetch_url_sync("https://cdn.example/paper.pdf")
+    assert "endstream" not in out and "risk=high" in out
+
+
+def test_fetch_url_pdf_without_extractor_shows_notice(monkeypatch):
+    _serve_bytes(monkeypatch, b"%PDF-1.7\n\x00\xff stream x\x9c endstream", "application/pdf")
+    monkeypatch.setitem(sys.modules, "pypdf", None)
+    out = server.fetch_url_sync("https://cdn.example/paper.pdf")
+    assert "no PDF extractor" in out and "endstream" not in out
+
+
+def test_fetch_url_does_not_decode_binary_as_html(monkeypatch):
+    _serve_bytes(monkeypatch, bytes(range(256)) * 20, "application/octet-stream")
+    out = server.fetch_url_sync("https://cdn.example/blob")
+    assert "BINARY CONTENT (application/octet-stream" in out and "\x7f" not in out
 
 
 @pytest.mark.parametrize("attended,headless,expected", [(None, None, "unattended"),

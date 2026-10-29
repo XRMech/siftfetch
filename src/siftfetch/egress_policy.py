@@ -36,6 +36,7 @@ import re
 import socket
 import threading
 import time
+import tomllib
 import unicodedata
 import warnings
 from dataclasses import dataclass, field
@@ -70,6 +71,7 @@ _CREDENTIAL_PATTERNS = [
 ]
 
 _NEXT_STEP = {
+    "blocked_domain": "This destination is blocked by the owner. Use another source.",
     "protected_value": (
         "Remove the value; if an API needs a contact email use {alias}; "
         "otherwise omit the field."
@@ -123,6 +125,21 @@ class Decision:
         # commands that expand variables, so a name leaves a well-behaved
         # agent with no usable contact. No alias ships; without one, the hint
         # says to omit the field.
+        if self.reason_code in ("protected_value", "soft_identifier"):
+            try:
+                policy = _load_policy()
+                ident = next((i for i in policy.identifiers if i.label == self.label), None)
+                kind = ident.kind if ident else None
+                if kind == "text":
+                    label = (self.label or "").lower()
+                    kind = next((k for k, hints in (
+                        ("organization", ("organization", "company", "org")),
+                        ("postal_address", ("address", "postal")),
+                        ("name", ("name",))) if any(hint in label for hint in hints)), None)
+                if kind in policy.substitute:
+                    return f"Remove the protected value; use the substitute {kind.replace('_', ' ')} from get_substitute, or omit the field."
+            except (PolicyError, OSError):
+                pass
         alias = contact_alias()
         if self.reason_code == "protected_value" and alias is None:
             return _NEXT_STEP["protected_value_no_alias"]
@@ -148,6 +165,7 @@ class _Identifier:
     cls: str  # "exact" | "soft"
     pattern: re.Pattern
     public_search: bool = False
+    kind: str = "text"
 
 
 @dataclass(frozen=True)
@@ -169,6 +187,9 @@ class _Policy:
     cookie_origins: set[str]
     mtimes: tuple = field(default_factory=tuple)
     cookies_attended_only: bool = True
+    substitute: dict[str, str] = field(default_factory=dict)
+    enabled: bool = True
+    blocked_domains: list[str] = field(default_factory=list)
 
 
 def policy_dir() -> Path:
@@ -183,7 +204,8 @@ def policy_fingerprint() -> str:
     absent, so creating one changes the fingerprint too.
     """
     digest = hashlib.sha256()
-    for name in ("identifiers.json", "exceptions.json", "config.json"):
+    for name in (f"{stem}.{suffix}" for stem in ("identifiers", "exceptions", "config")
+                 for suffix in ("json", "toml")):
         path = policy_dir() / name
         digest.update(name.encode())
         try:
@@ -195,22 +217,40 @@ def policy_fingerprint() -> str:
 
 SECRET_FILE_MODES = ("strict", "standard", "off")
 
+CONFIG_KEYS = frozenset({"enabled", "blocked_domains", "contact_alias", "substitute",
+    "secret_file_mode", "cookie_origins", "cookies_attended_only", "local_endpoints",
+    "mcp_local_tools", "guard_lock", "browser_fetch", "download_dir", "sightings",
+    "sightings_max_bytes", "spotlight", "shell_fetch"})
+_SECURITY_KEYS = CONFIG_KEYS - {"download_dir", "sightings", "sightings_max_bytes", "spotlight"}
+SUBSTITUTE_KEYS = frozenset({"name", "email", "phone", "postal_address", "organization"})
+
 
 class PolicyError(ValueError):
     """A policy file or field is invalid; never includes its value."""
 
 
 def validate_policy(name: str, data: object) -> dict:
+    name = name.removesuffix(".toml") + ".json" if name.endswith(".toml") else name
     def require(ok, field):
         if not ok:
             raise PolicyError(f"{name}: {field} is invalid")
 
+    def known(mapping, allowed, field):
+        # Comment keys ("_note", "$schema") are ignored. Other unknown keys fail
+        # closed, named so the owner can find the typo; keys are schema, not values.
+        extra = [k for k in mapping if k not in allowed and not str(k).startswith(("_", "$"))]
+        if extra:
+            named = sorted(str(k) for k in extra if re.fullmatch(r"[A-Za-z][\w-]{0,39}", str(k)))
+            raise PolicyError(f"{name}: {field} has unknown key {', '.join(named) or '(unprintable)'}")
+
     require(isinstance(data, dict), "root")
     if name == "identifiers.json":
+        known(data, {"version", "values"}, "root")
         require(isinstance(data.get("values"), list), "values")
         for i, entry in enumerate(data["values"]):
             field = f"values[{i}]"
             require(isinstance(entry, dict), field)
+            known(entry, {"label", "value", "kind", "class", "public_search", "match"}, field)
             for key in ("label", "value"):
                 require(isinstance(entry.get(key), str), field + "." + key)
             require(isinstance(entry.get("kind"), str) and entry["kind"] in _KIND_PATTERNS, field + ".kind")
@@ -225,9 +265,12 @@ def validate_policy(name: str, data: object) -> dict:
             except (ValueError, KeyError):
                 require(False, field + ".value")
     elif name == "exceptions.json":
+        known(data, {"version", "exceptions"}, "root")
         require(isinstance(data.get("exceptions"), list), "exceptions")
         valid = []
         for entry in data["exceptions"]:
+            if isinstance(entry, dict):
+                known(entry, {"label", "op", "command_prefix", "expires", "origin", "location", "path_prefix"}, "exceptions")
             try:
                 if not isinstance(entry, dict):
                     raise ValueError
@@ -256,10 +299,47 @@ def validate_policy(name: str, data: object) -> dict:
             warnings.warn(f"exceptions.json: ignored {count} invalid grants", stacklevel=2)
         data = dict(data, exceptions=valid)
     elif name == "config.json":
+        known(data, CONFIG_KEYS | {"version"}, "root")
+        if "contact_alias" in data:
+            require(isinstance(data["contact_alias"], str), "contact_alias")
+        if "substitute" in data:
+            substitute = data["substitute"]
+            require(isinstance(substitute, dict), "substitute")
+            known(substitute, SUBSTITUTE_KEYS, "substitute")
+            require(all(isinstance(v, str) and v.strip() and not any(ord(c) < 32 for c in v)
+                        for v in substitute.values()), "substitute")
+            if data.get("contact_alias") and substitute.get("email"):
+                require(data["contact_alias"] == substitute["email"], "substitute.email conflicts with contact_alias")
+        if "browser_fetch" in data:
+            browser = data["browser_fetch"]
+            require(isinstance(browser, dict), "browser_fetch")
+            known(browser, {"mode", "window", "browser", "max_per_minute", "sites"}, "browser_fetch")
+        if "blocked_domains" in data:
+            from siftfetch.domains import domain_pattern
+            require(isinstance(data["blocked_domains"], list), "blocked_domains")
+            for item in data["blocked_domains"]:
+                try:
+                    require(isinstance(item, str), "blocked_domains")
+                    domain_pattern(item)
+                except (ValueError, UnicodeError):
+                    require(False, "blocked_domains")
+        if "enabled" in data:
+            require(type(data["enabled"]) is bool, "enabled")
+        if "spotlight" in data:
+            require(data["spotlight"] in ("paragraph", "words", "off"), "spotlight")
+        if "shell_fetch" in data:
+            require(data["shell_fetch"] in ("reroute", "deny", "off"), "shell_fetch")
+        if "sightings" in data:
+            require(data["sightings"] in ("on", "off"), "sightings")
+        if "sightings_max_bytes" in data:
+            require(type(data["sightings_max_bytes"]) is int and data["sightings_max_bytes"] > 0, "sightings_max_bytes")
+        if "download_dir" in data:
+            require(isinstance(data["download_dir"], str) and bool(data["download_dir"].strip()), "download_dir")
         if "guard_lock" in data:
             lock = data["guard_lock"]
             require(type(lock) is bool or isinstance(lock, dict), "guard_lock")
             if isinstance(lock, dict):
+                known(lock, {"enabled", "paths"}, "guard_lock")
                 require(type(lock.get("enabled", True)) is bool, "guard_lock.enabled")
                 paths = lock.get("paths", [])
                 require(isinstance(paths, list) and all(isinstance(p, str) for p in paths), "guard_lock.paths")
@@ -283,6 +363,7 @@ def validate_policy(name: str, data: object) -> dict:
             for i, ep in enumerate(data["local_endpoints"]):
                 field = f"local_endpoints[{i}]"
                 require(isinstance(ep, dict), field)
+                known(ep, {"scheme", "host", "port", "service", "allowed_ops"}, field)
                 require(ep.get("scheme") in ("http", "https"), field + ".scheme")
                 require(isinstance(ep.get("host"), str) and bool(ep["host"]), field + ".host")
                 require(type(ep.get("port")) is int and 0 < ep["port"] <= 65535, field + ".port")
@@ -290,19 +371,148 @@ def validate_policy(name: str, data: object) -> dict:
 
 
 def _read_policy(name: str, optional: bool = False) -> dict:
-    try:
-        data = json.loads((policy_dir() / name).read_text(encoding="utf-8"))
-    except FileNotFoundError:
+    stem = Path(name).stem
+    loaded = []
+    for suffix in ("json", "toml"):
+        filename = f"{stem}.{suffix}"
+        try:
+            text = (policy_dir() / filename).read_text(encoding="utf-8")
+            data = tomllib.loads(text) if suffix == "toml" else json.loads(text)
+            loaded.append(validate_policy(stem + ".json", data))
+        except FileNotFoundError:
+            continue
+        except PolicyError as exc:
+            raise PolicyError(str(exc).replace(stem + ".json", filename, 1)) from None
+        except (OSError, ValueError):
+            raise PolicyError(f"{filename}: file or schema is invalid") from None
+    if not loaded:
         if optional:
-            return {"exceptions": []} if name == "exceptions.json" else {}
-        raise PolicyError(f"{name}: file is missing") from None
-    except (OSError, ValueError):
-        raise PolicyError(f"{name}: file could not be read") from None
-    return validate_policy(name, data)
+            return {"exceptions": []} if stem == "exceptions" else {}
+        raise PolicyError(f"{name}: file is missing")
+    if len(loaded) == 2:
+        # Conservative: conflicting security declarations require owner cleanup.
+        # TOML wins for non-security presentation/storage settings.
+        left, right = loaded
+        keys = _SECURITY_KEYS if stem == "config" else set(left) | set(right)
+        if any(left.get(key) != right.get(key) for key in keys if key != "version"):
+            raise PolicyError(f"{stem}: conflicting JSON and TOML security policy")
+    return loaded[-1]
 
 
 def _config() -> dict:
     return _read_policy("config.json", optional=True)
+
+
+def enabled() -> bool:
+    """Egress value protection; invalid configuration never disables it."""
+    try:
+        policy = _load_policy()
+        switch = os.environ.get("SIFTFETCH_ENABLED")
+        return policy.enabled and switch != "0"
+    except Exception:
+        return True
+
+
+
+# Fixed names only: environment contents and owner-written keys are never echoed.
+_STATUS_ENV = ("SIFTFETCH_HOME", "SIFTFETCH_DATA", "SIFTFETCH_DOWNLOAD_DIR",
+               "SIFTFETCH_CONTACT_ALIAS", "SIFTFETCH_ENABLED", "SIFTFETCH_ATTENDED")
+
+
+def _directory_status(getter):
+    result = {"exists": False, "writable": False}
+    try:
+        from siftfetch import saving
+        path = getter()
+        result["exists"] = path.is_dir()
+        if any(saving.is_link(p) for p in (path, *path.absolute().parents)):
+            return result
+        parent = path
+        while not parent.exists():
+            parent = parent.parent
+        result["writable"] = parent.is_dir() and os.access(parent, os.W_OK)
+    except Exception:
+        pass
+    return result
+
+
+def policy_status() -> dict:
+    """Read-only, value-free diagnostics. Errors never escape this boundary."""
+    result = {"loaded": False, "error": None, "files": {}, "config": {},
+              "identifiers": {}, "exceptions": {}, "env": {}, "paths": {},
+              "protection": {"enabled": True, "config_disabled": None, "env_disabled": False}}
+    try:
+        from siftfetch import saving
+        result["env"] = {key: "set" if key in os.environ else "unset" for key in _STATUS_ENV}
+        switch = os.environ.get("SIFTFETCH_ENABLED")
+        if switch in ("0", "1"):
+            result["env"]["SIFTFETCH_ENABLED"] = switch
+        result["protection"]["env_disabled"] = switch == "0"
+        result["paths"] = {"data": _directory_status(saving.data_dir),
+                           "download": _directory_status(saving.download_dir)}
+        for stem in ("identifiers", "exceptions", "config"):
+            base = policy_dir()
+            js, toml = ((base / (stem + ext)).exists() for ext in (".json", ".toml"))
+            result["files"][stem] = {"format": "toml" if toml else "json" if js else "absent",
+                "warning": stem + ".json is shadowed by TOML" if js and toml else None}
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            loaded = _load_policy()
+            config = _config()
+            counts = {}
+            # Read the selected document before validation removes invalid grants.
+            fmt = result["files"]["exceptions"]["format"]
+            entries = []
+            if fmt != "absent":
+                text = (policy_dir() / ("exceptions." + fmt)).read_text(encoding="utf-8")
+                entries = (tomllib.loads(text) if fmt == "toml" else json.loads(text))["exceptions"]
+            for entry in entries:
+                op = entry.get("op") if isinstance(entry, dict) else None
+                op = op if op in ("fetch", "search", "shell", "download", "api") else "other"
+                bucket = counts.setdefault(op, {"active": 0, "expired": 0, "invalid": 0})
+                valid = validate_policy("exceptions.json", {"exceptions": [entry]})["exceptions"]
+                state = "invalid" if not valid else (
+                    "active" if _parse_expiry(entry["expires"]) > datetime.now(timezone.utc) else "expired")
+                bucket[state] += 1
+        result["exceptions"] = counts
+        by_kind = {kind: {cls: 0 for cls in ("exact", "soft")} for kind in _KIND_PATTERNS}
+        for ident in loaded.identifiers:
+            by_kind[ident.kind][ident.cls] += 1
+        result["identifiers"] = {"total": len(loaded.identifiers), "by_kind_class": by_kind,
+                                 "public_search": sum(i.public_search for i in loaded.identifiers)}
+        safe = {key: config.get(key, default) for key, default in (
+            ("enabled", True), ("secret_file_mode", "strict"), ("cookies_attended_only", True),
+            ("shell_fetch", "reroute"),
+            ("spotlight", "paragraph"), ("sightings", "on"), ("sightings_max_bytes", 20 * 1024 * 1024))}
+        safe.update({key: len(config.get(key, [])) for key in
+                     ("blocked_domains", "cookie_origins", "local_endpoints", "mcp_local_tools")})
+        browser = browser_fetch_settings()
+        safe["browser_fetch"] = {**browser, "sites": len(browser["sites"])}
+        lock = config.get("guard_lock", False)
+        safe["guard_lock"] = {"enabled": lock.get("enabled", True) if isinstance(lock, dict) else lock,
+                              "extra_paths": len(lock.get("paths", [])) if isinstance(lock, dict) else 0}
+        safe["download_dir"] = "set" if config.get("download_dir") else "unset"
+        safe["substitute"] = sorted(k for k in loaded.substitute if k in SUBSTITUTE_KEYS)
+        if contact_alias() is not None:
+            safe["contact_alias"] = {"status": "set", "source":
+                "env" if os.environ.get("SIFTFETCH_CONTACT_ALIAS") else "config"}
+        elif not loaded.substitute.get("email"):
+            safe["contact_alias"] = {"status": "unset", "source":
+                "env" if os.environ.get("SIFTFETCH_CONTACT_ALIAS") else "config"}
+        result["config"] = safe
+        result["protection"].update(enabled=loaded.enabled and switch != "0",
+                                      config_disabled=not loaded.enabled)
+        result["loaded"] = True
+    except PolicyError as exc:
+        result["error"] = str(exc)
+    except Exception:
+        result["error"] = "policy: file or schema could not be inspected"
+    return result
+
+
+def blocked_domain(host: str | None) -> bool:
+    from siftfetch.domains import matches
+    return bool(host) and any(matches(host, pattern) for pattern in _load_policy().blocked_domains)
 
 
 def secret_file_mode() -> str:
@@ -329,6 +539,8 @@ GUARD_LOCK_PATHS = (
     ".claude/settings.local.json",
     ".claude/hooks/",
     ".codex/config.toml",
+    ".codex/hooks.json",
+    ".claude.json",
 )
 
 
@@ -362,7 +574,7 @@ def guard_lock_state() -> tuple[list[str], str | None]:
         _read_policy("identifiers.json")
     except PolicyError as exc:
         return list(GUARD_LOCK_PATHS), f"{exc} in {policy_dir()}"
-    if not path.exists():
+    if not path.exists() and not path.with_suffix(".toml").exists():
         return [], None
     builtin = list(GUARD_LOCK_PATHS)
     try:
@@ -397,8 +609,8 @@ def contact_alias() -> str | None:
     environment lacks the variable.
     """
     try:
-        alias = os.environ.get("SIFTFETCH_CONTACT_ALIAS") or _config().get("contact_alias")
-    except PolicyError:
+        alias = _load_policy().substitute.get("email")
+    except (PolicyError, OSError, ValueError):
         return None
     if not isinstance(alias, str) or alias.count("@") != 1:
         return None
@@ -408,6 +620,17 @@ def contact_alias() -> str | None:
     if domain in _RESERVED_DOMAINS or domain.endswith(_RESERVED_SUFFIXES):
         return None
     return alias.strip()
+
+
+def get_substitute(kind: str | None = None) -> dict[str, str]:
+    """Return approved stand-ins only; never identifiers. Missing fields are absent."""
+    if kind is not None and kind not in SUBSTITUTE_KEYS:
+        raise ValueError("unknown substitute kind")
+    try:
+        values = _load_policy().substitute
+    except Exception:
+        raise EgressDenied(Decision("deny", "policy_unavailable")) from None
+    return {k: v for k, v in values.items() if kind is None or k == kind}
 
 
 BROWSER_FETCH_MODES = ("off", "on-wall", "always-for-listed")
@@ -538,8 +761,10 @@ def _origin_of(url: str) -> str:
 def _load_policy() -> _Policy:
     global _cached
     base = policy_dir()
-    files = [base / "identifiers.json", base / "exceptions.json", base / "config.json"]
-    mtimes = tuple(_mtime(f) for f in files)
+    files = [base / (stem + "." + suffix) for suffix in ("json", "toml")
+             for stem in ("identifiers", "exceptions", "config")]
+    mtimes = (str(base.absolute()), os.environ.get("SIFTFETCH_CONTACT_ALIAS"),
+              *((f.stat().st_mtime_ns, f.stat().st_size) if f.exists() else None for f in files))
     with _lock:
         if _cached is not None and _cached.mtimes == mtimes:
             return _cached
@@ -555,37 +780,47 @@ def _load_policy() -> _Policy:
                 raise ValueError("public_search is only allowed on soft identifiers")
             pattern = identifier_pattern(entry["kind"], entry["value"],
                                          "word" if cls == "soft" else entry.get("match", "auto"))
-            identifiers.append(_Identifier(entry["label"], cls, pattern, public))
+            identifiers.append(_Identifier(entry["label"], cls, pattern, public, entry["kind"]))
 
         grants: list[_Grant] = []
-        if mtimes[1] is not None:
-            for entry in _read_policy("exceptions.json")["exceptions"]:
-                try:
-                    expires = _parse_expiry(entry["expires"])
-                except (KeyError, ValueError):
-                    continue  # an invalid grant is ignored, never widened
-                grants.append(_Grant(
-                    label=entry["label"],
-                    origin="" if entry["op"] == "shell" else _origin_of(entry["origin"]),
-                    op=entry["op"],
-                    location=entry.get("location", ""),
-                    path_prefix=entry.get("path_prefix", "/"),
-                    expires=expires,
-                    command_prefix=entry.get("command_prefix", ""),
-                ))
+        for entry in _read_policy("exceptions.json", optional=True)["exceptions"]:
+            try:
+                expires = _parse_expiry(entry["expires"])
+            except (KeyError, ValueError):
+                continue  # an invalid grant is ignored, never widened
+            grants.append(_Grant(
+                label=entry["label"],
+                origin="" if entry["op"] == "shell" else _origin_of(entry["origin"]),
+                op=entry["op"],
+                location=entry.get("location", ""),
+                path_prefix=entry.get("path_prefix", "/"),
+                expires=expires,
+                command_prefix=entry.get("command_prefix", ""),
+            ))
 
         local_endpoints: set[str] = set()
         cookie_origins: set[str] = set()
         attended_only = True
-        if mtimes[2] is not None:
-            config = _config()
-            for ep in config.get("local_endpoints", []):
-                local_endpoints.add(_canonical_origin(ep["scheme"], ep["host"], int(ep["port"])))
-            cookie_origins = {_origin_of(o) for o in config.get("cookie_origins", [])}
-            attended_only = config.get("cookies_attended_only", True) is not False
+        config = _config()
+        for ep in config.get("local_endpoints", []):
+            local_endpoints.add(_canonical_origin(ep["scheme"], ep["host"], int(ep["port"])))
+        cookie_origins = {_origin_of(o) for o in config.get("cookie_origins", [])}
+        attended_only = config.get("cookies_attended_only", True) is not False
 
+        substitute = dict(config.get("substitute", {}))
+        alias = os.environ.get("SIFTFETCH_CONTACT_ALIAS") or config.get("contact_alias")
+        if alias:
+            substitute["email"] = alias
+        candidates = [*substitute.values(), *config.get("substitute", {}).values(), config.get("contact_alias", "")]
+        for value in filter(None, candidates):
+            views = decoded_views(value)
+            if not views.complete or any(ident.pattern.search(v) for ident in identifiers for v in views.views):
+                raise PolicyError("config: substitute overlaps a protected value")
+            if any(_credential_in(v) for v in views.views):
+                raise PolicyError("config: substitute resembles a credential")
         _cached = _Policy(identifiers, grants, local_endpoints, cookie_origins, mtimes,
-                          cookies_attended_only=attended_only)
+                          cookies_attended_only=attended_only, substitute=substitute,
+                          enabled=config.get("enabled", True), blocked_domains=config.get("blocked_domains", []))
         return _cached
 
 
@@ -791,6 +1026,8 @@ def _decide(locations: list[tuple[str, str]], *, policy: _Policy, op: str,
             origin: str | None, path: str, session_kind: str, interactive_ask: bool,
             exact_only: bool = False, command: str | None = None) -> Decision:
     """Decide every occurrence; the first deny wins, then any ask."""
+    if not enabled():
+        return Decision("allow", "disabled", sensitive_host=True)
     asks: list[Decision] = []
     sensitive_host = False
     remaining = MAX_DECODE_BYTES
@@ -910,7 +1147,7 @@ def _host_for_log(host: str | None, decision: Decision) -> str | None:
 
 
 def _logged(decision: Decision, *, tool: str, op: str, host: str | None) -> Decision:
-    if decision.action == "allow" and (op == "shell" or tool.startswith("mcp__")):
+    if decision.action == "allow" and decision.reason_code != "disabled" and (op == "shell" or tool.startswith("mcp__")):
         return decision
     host = _host_for_log(host, decision)
     record = {
@@ -963,6 +1200,8 @@ def check_url(url: str, *, op: str = "fetch", tool: str = "siftfetch",
         if isinstance(parsed, Decision):
             return parsed
         locations, origin, path, ambiguous = parsed
+        if blocked_domain(host):
+            return Decision("deny", "blocked_domain")
         # A listed local endpoint exempts only the destination; its request
         # content is still scanned like any other.
         if origin not in policy.local_endpoints and _literal_private(host):
@@ -1056,6 +1295,8 @@ def check_mcp(payload: dict, *, tool: str, session_kind: str) -> Decision:
             if isinstance(parsed, Decision):
                 return parsed
             parts, origin, _, _ = parsed
+            if blocked_domain(urlsplit(url).hostname):
+                return Decision("deny", "blocked_domain")
             locations.extend(parts)
             if not browser_driver and origin not in policy.local_endpoints and _literal_private(urlsplit(url).hostname):
                 return Decision("deny", "private_destination")

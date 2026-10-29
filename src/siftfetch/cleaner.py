@@ -397,6 +397,59 @@ def _render_markdown(fragment_html: str) -> str:
     return html.unescape(markdown)
 
 
+def _attribute_text(soup):
+    """Bounded inventory before extraction discards non-visible carriers.
+
+    Values are plain text, never HTML or executable JSON. Parser-decoded HTML
+    entities are preserved for the normal scanner. Attribute presence alone
+    does not change risk.
+    """
+    import json
+    parts, remaining = [], 32768
+
+    def add(label, value):
+        nonlocal remaining
+        if not isinstance(value, str) or not value.strip() or remaining <= 0:
+            return
+        if value.lstrip().lower().startswith("data:"):
+            return
+        value = value[:remaining]
+        remaining -= len(value)
+        parts.append(f"[ATTRIBUTE {label}] {value} [END ATTRIBUTE]")
+
+    for el in soup.find_all(True):
+        for key, value in list(el.attrs.items()):
+            if key in {"alt", "title", "aria-label", "aria-description", "placeholder"} or key.startswith("data-") and key != "data-sift-hidden":
+                add(f"{el.name}.{key}", value)
+                # Do not let markdownify repeat a title outside containment.
+                if key == "title":
+                    del el.attrs[key]
+        if el.name == "meta" and (el.get("name") or el.get("property")):
+            add("meta.content", el.get("content"))
+        if el.name in {"title", "desc"} and el.find_parent("svg"):
+            add("svg." + el.name, el.get_text(" ", strip=True))
+        if el.name == "script" and str(el.get("type", "")).lower() in {"application/ld+json", "application/json"}:
+            raw = el.string or ""
+            if len(raw) > 32768:
+                add("script.json", raw)
+                continue
+            try:
+                data = json.loads(raw)
+            except (ValueError, RecursionError):
+                add("script.json", raw)
+                continue
+            stack = [data]
+            while stack and remaining > 0:
+                item = stack.pop()
+                if isinstance(item, dict):
+                    stack.extend(reversed(list(item.values())))
+                elif isinstance(item, list):
+                    stack.extend(reversed(item))
+                else:
+                    add("script.json", item)
+    return "\n\n".join(parts)
+
+
 def _pick_fallback_fragment(soup: BeautifulSoup) -> str:
     """Choose a broader content fragment when readability returns too little."""
     candidates = []
@@ -437,7 +490,7 @@ def _extract_title(soup: BeautifulSoup, fallback: str) -> str:
     return ""
 
 
-def _extract_links(soup: BeautifulSoup, base_url: str, max_links: int) -> list[tuple[str, str]]:
+def _extract_links(soup: BeautifulSoup, base_url: str, max_links: int, prepare=str) -> list[tuple[str, str]]:
     """Extract and normalize links for recursive doc crawling."""
     seen: set[str] = set()
     links: list[tuple[str, str]] = []
@@ -459,7 +512,7 @@ def _extract_links(soup: BeautifulSoup, base_url: str, max_links: int) -> list[t
         text = anchor.get_text(" ", strip=True)
         if not text:
             text = anchor.get("title") or absolute
-        text = re.sub(r"\s+", " ", text).strip()
+        text = prepare(re.sub(r"\s+", " ", text).strip())
         if len(text) > 120:
             text = text[:117].rstrip() + "..."
 
@@ -539,7 +592,7 @@ def document_outline(text: str, max_entries: int = 400) -> str:
     """Render a document's heading map with per-section sizes.
 
     This is the cheap planning view for oversized sources: a 550 KB API dump
-    collapses to a few hundred lines, so a curator can decide how to split it
+    collapses to a few hundred lines, so a caller can decide how to split it
     into sub-documents before pulling any section body.
     """
     heads = _headings(text)
@@ -679,11 +732,12 @@ def clean_html(
     nonce = secrets.token_hex(16)
     start_marker, end_marker = f"SFHIDDENSTART{nonce}", f"SFHIDDENEND{nonce}"
     hidden_reasons = mark_hidden(soup, start_marker, end_marker)
+    attribute_text = _attribute_text(soup)
 
     def prepared(text):
         text = defang_markers(text)
         return PreparedText(text.replace(start_marker, "[HIDDEN FROM READERS:")
-                            .replace(end_marker, "[END HIDDEN]"))
+                            .replace(end_marker, "[END HIDDEN]"), source_url=url)
 
     # Step 2: Strip noise. "raw" keeps nav/header/aside and noise-named
     # containers, which on documentation sites often hold real content.
@@ -786,15 +840,21 @@ def clean_html(
 
     if notices:
         markdown = "\n\n".join(notices) + "\n\n" + markdown
+    if attribute_text:
+        markdown = attribute_text + "\n\n" + markdown
+
+    # Replace private tokens before any operation can slice through one.
+    markdown = prepared(markdown)
+    title = prepared(title)
 
     # Step 4b: Structure-aware views. Both are computed against the whole
     # cleaned body, before any truncation, so an oversized document stays fully
     # reachable: outline to plan the split, section to pull one piece at a time.
     if mode == "outline":
-        return prepared(document_outline(markdown))
+        return PreparedText(document_outline(markdown), source_url=url)
     if section:
         picked = extract_section(markdown, section)
-        return prepared(_truncate_with_marker(picked, max_chars) if max_chars else picked)
+        return PreparedText(_truncate_with_marker(picked, max_chars) if max_chars else picked, source_url=url)
 
     # Paging: drop everything before offset, and say what was skipped so the
     # window is never mistaken for the start of the document.
@@ -808,7 +868,7 @@ def clean_html(
             f"earlier content not shown.]*\n\n" + markdown[offset:]
         )
 
-    links = _extract_links(soup, url, max_links=max_links) if include_links else []
+    links = _extract_links(soup, url, max_links=max_links, prepare=prepared) if include_links else []
     links_section = _render_links_section(links)
 
     # Step 5: Build the result.
@@ -841,4 +901,4 @@ def clean_html(
     if max_chars and len(result) > max_chars:
         result = _truncate_with_marker(result, max_chars)
 
-    return prepared(result)
+    return PreparedText(result, source_url=url)

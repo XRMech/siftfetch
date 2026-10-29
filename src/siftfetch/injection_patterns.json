@@ -1,12 +1,23 @@
 {
-  "version": "inj-3",
+  "version": "inj-7",
   "window": 200,
   "categories": {
     "override": [
-      "ignore\\s+(?:all|any|previous|prior|above|the\\s+above)\\s+(?:instructions|rules|prompts|directions)",
+      "ignore\\s+(?:(?:all|any)\\s+(?:(?:previous|prior|above)\\s+)?|(?:previous|prior|above|the\\s+above)\\s+)(?:instructions|rules|prompts|directions)",
       "disregard\\s.{0,30}instructions",
       "new\\s+instructions\\s*:",
-      "forget\\s+(?:all|your|previous)\\s+(?:instructions|rules)"
+      "forget\\s+(?:all|your|previous)\\s+(?:instructions|rules)",
+      "\\b(?:ignora|ignore|ignorar|desconsidera|olvida|esqueça)\\b[^.!?\\n]{0,65}\\b(?:instrucciones|instruções|reglas|regras)\\s+(?:anteriores|previas)|\\b(?:ignora|ignore|ignorar|desconsidera)\\b[^.!?\\n]{0,35}\\b(?:anteriores|previas)\\s+(?:instrucciones|instruções)",
+      "\\b(?:ignore[rz]?|oublie[rz]?)\\b[^.!?\\n]{0,50}\\b(?:instructions|consignes|règles)\\s+(?:précédentes|antérieures)",
+      "\\b(?:ignoriere|ignorieren|missachte)\\b[^.!?\\n]{0,50}\\b(?:vorherigen?|bisherigen?|früheren?)\\s+(?:Anweisungen|Regeln)",
+      "\\b(?:ignora|dimentica)\\b[^.!?\\n]{0,40}\\b(?:istruzioni|regole)\\s+precedenti",
+      "(?:忽略|无视|無視).{0,20}(?:之前|以前|先前|所有).{0,12}(?:指令|指示|命令)|(?:以前|前の|これまでの).{0,15}(?:指示|命令).{0,10}(?:無視|忘れ)",
+      "(?:이전|앞선|기존).{0,15}(?:지시|명령).{0,10}(?:무시|잊)",
+      "\\b(?:игнорируй|игнорируйте|забудь|отмени)\\b[^.!?\\n]{0,40}(?:предыдущ|прежн|ранн)[^.!?\\n]{0,20}(?:инструкц|указан|правил)",
+      "(?:تجاهل|انس).{0,25}(?:التعليمات|الأوامر).{0,15}(?:السابقة|السابق)",
+      "(?:पिछले|पिछली|पूर्व).{0,20}(?:निर्देश|अनुदेश).{0,15}(?:अनदेखा|नज़रअंदाज़|भूल)",
+      "(?:nuevas instrucciones|nouvelles (?:instructions|consignes)|neue Anweisungen|novas instruções|nuove istruzioni|新的指令|新しい指示|새로운 지시|новые инструкции|تعليمات جديدة|नए निर्देश)\\s*[:：]",
+      "(?:ahora eres|tu es maintenant|vous êtes maintenant|du bist jetzt|você agora é|ora sei|你现在是|あなたは今|당신은 이제|теперь ты|أنت الآن|अब आप).{0,35}(?:assistant|asistente|assistente|Assistent|助手|アシスタント|도우미|ассистент|مساعد|सहायक)"
     ],
     "role": [
       "\\byou\\s+are\\s+now\\b",
@@ -25,5 +36,14 @@
       "curl\\s+\\S+\\s*\\|\\s*(?:sh|bash|iex)\\b",
       "\\biex\\s*\\("
     ]
+  },
+  "reader_signals": {
+    "address": "\\b(?:assistant|AI|model|agent|reading assistant|you|your)\\b",
+    "meta": "\\b(?:your|the requested|this)\\s+(?:answer|response(?!\\s+(?:header|code|status|body|object))|summary|output(?!\\s+(?:directory|file|path|buffer|stream|device|port))|recommendation|conversation|transcript|instructions)|\\b(?:the (?:next )?user (?:asks|question)|before (?:you )?answering|before you answer|private instructions|system prompt|chat history)\\b|(?:tu|su|votre|ta|sua|tua|deine|Ihre)\\s+(?:respuesta|réponse|résumé|resposta|risposta|Antwort|Zusammenfassung)|(?:prompt|mensaje|message|mensagem|messaggio)\\s+(?:del sistema|système|do sistema|di sistema)|Systemprompt|(?:你的|您的).{0,4}(?:回答|摘要|输出)|系统提示|システムプロンプト|あなたの(?:回答|要約)|시스템 프롬프트|당신의 (?:답변|요약)|(?:твой|ваш|свой|системный)\\s+(?:ответ|резюме|промпт)|(?:تعليمات النظام|إجابتك|ملخصك)|(?:सिस्टम प्रॉम्प्ट|आपका उत्तर|अपने उत्तर)",
+    "mood": "\\b(?:must|shall|should|do not|don.t|always|never|required to|end|alter|distort|hide|replace|transmit|send|forward|upload|list|adopt|present|report|state|say|omit|conceal|suppress|reveal|disclose|contact|treat|use|include|append|make|ensure|answer|respond|summarize|translate|return|output|write|read|ignore|disregard)\\b|\\b(?:debes|debe|envía|envie|revela|révèle|envoyez|doit|devez|musst|müssen|sende|zeige|deve|envia|rivela|invia|покажи|отправь|раскрой|должен)\\b|(?:发送|传输|显示|透露|必须|無視|送信|開示|してください|반드시|전송|공개|أرسل|اكشف|يجب|भेजें|प्रकट|चाहिए)",
+    "conceal": "\\b(?:do not|don.t|never)\\s+(?:disclose|mention|reveal|tell)|\\b(?:as your own|as though nothing|regardless of (?:the )?evidence|conceal|secretly|without (?:telling|informing|mentioning))\\b",
+    "movement": "\\b(?:transmit|upload|send|forward|post|submit|contact)\\b|\\b(?:envía|envie|envoyez|sende|envia|invia|отправь)\\b|(?:发送|传输|送信|전송|أرسل|भेजें)",
+    "authority": "\\b(?:supersedes|governing rule|required to perform|approved by the owner|binding|takes precedence)\\b",
+    "sensitive": "(?:datos personales|conversación privada|données personnelles|conversation privée|persönliche Daten|privates Gespräch|dados pessoais|conversa privada|dati personali|conversazione privata|个人数据|私人对话|個人情報|非公開の会話|개인 정보|비공개 대화|личные данные|приватный разговор|البيانات الشخصية|المحادثة الخاصة|व्यक्तिगत डेटा|निजी बातचीत)"
   }
 }

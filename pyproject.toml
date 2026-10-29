@@ -32,6 +32,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+pdf = ["pypdf>=6"]
 # Real-browser reads for pages behind bot walls (off unless configured).
 browser = ["playwright>=1.48"]
 # The owner's signed-in browser session, for sites on the login allowlist.
@@ -39,6 +40,7 @@ logins = ["browser-cookie3>=0.19"]
 test = ["pytest>=8"]
 
 [project.scripts]
+siftfetch = "siftfetch.cli:main"
 siftfetch-server = "siftfetch.server:main"
 siftfetch-hook = "siftfetch.hook:main"
 
@@ -49,7 +51,7 @@ Homepage = "https://github.com/XRMech/siftfetch"
 where = ["src"]
 
 [tool.setuptools.package-data]
-siftfetch = ["injection_patterns.json"]
+siftfetch = ["injection_patterns.json", "public_suffix_list.dat", "templates/*.json", "benchmark_corpus/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

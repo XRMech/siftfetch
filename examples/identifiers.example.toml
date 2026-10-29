@@ -1,0 +1,7 @@
+version = 1
+
+[[values]]
+label = "personal_email"
+kind = "email"
+value = "jane.doe@mail.example"
+class = "exact"

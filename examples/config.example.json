@@ -11,5 +11,12 @@
     "browser": "msedge",
     "max_per_minute": 6,
     "sites": []
-  }
+  },
+  "enabled": true,
+  "blocked_domains": [],
+  "substitute": {},
+  "spotlight": "paragraph",
+  "sightings": "on",
+  "sightings_max_bytes": 20971520,
+  "mcp_local_tools": []
 }

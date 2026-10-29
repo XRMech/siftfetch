@@ -1,0 +1,16 @@
+---
+topic: llms
+status: verified
+last-updated: 2026-10-28
+---
+
+# SiftFetch
+SiftFetch cleans incoming web content: hidden-text stripping, injection scanning and risk grading, structural and suspected spans, spotlighting, untrusted-content envelopes, and a sightings log. Outbound value checks protect outgoing data. Optional Lockdown and setup tooling add controls; labels cannot prevent every injection.
+
+| Task | Read |
+|---|---|
+| Integrate Python without MCP SDK | [Library](docs/library-api.md) |
+| Run as MCP server | [Server setup](docs/setup/mcp-server.md) |
+| Register hooks | [Setup](SETUP.md) |
+| Understand limits | [Hook](docs/hook.md) |
+| Find topics | [Index](docs/index.md) |

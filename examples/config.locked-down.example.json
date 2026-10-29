@@ -4,6 +4,6 @@
   "cookie_origins": [],
   "cookies_attended_only": true,
   "local_endpoints": [],
-  "guard_lock": {"enabled": true, "paths": ["C:/tools/siftfetch"]},
+  "guard_lock": {"enabled": true, "paths": ["/path/to/siftfetch"]},
   "browser_fetch": {"mode": "off"}
 }

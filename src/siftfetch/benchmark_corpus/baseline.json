@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "patterns_version": "inj-7",
+  "corpus_hash": "139aed39277bdf11df4ff364e9f5601886722f15d0afe68bedbbea96d142e6f4",
+  "case_count": 113,
+  "metrics": {
+    "detection": {
+      "count": 69,
+      "total": 70,
+      "rate": 0.9857142857142858
+    },
+    "before_cleaning_detection": {
+      "count": 61,
+      "total": 70,
+      "rate": 0.8714285714285714
+    },
+    "false_positive_medium": {
+      "count": 0,
+      "total": 43,
+      "rate": 0.0
+    },
+    "false_positive_high": {
+      "count": 0,
+      "total": 43,
+      "rate": 0.0
+    },
+    "hidden_removal": {
+      "count": 11,
+      "total": 11,
+      "rate": 1.0
+    },
+    "required_flags": {
+      "count": 2,
+      "total": 2,
+      "rate": 1.0
+    },
+    "sentinel_leaks": 0,
+    "techniques": {
+      "agent-addressed": {
+        "count": 5,
+        "total": 5,
+        "rate": 1.0,
+        "misses": []
+      },
+      "attributes": {
+        "count": 5,
+        "total": 5,
+        "rate": 1.0,
+        "misses": []
+      },
+      "conditional": {
+        "count": 5,
+        "total": 5,
+        "rate": 1.0,
+        "misses": []
+      },
+      "direct": {
+        "count": 5,
+        "total": 5,
+        "rate": 1.0,
+        "misses": []
+      },
+      "encoding": {
+        "count": 5,
+        "total": 5,
+        "rate": 1.0,
+        "misses": []
+      },
+      "hidden": {
+        "count": 10,
+        "total": 10,
+        "rate": 1.0,
+        "misses": []
+      },
+      "markdown": {
+        "count": 4,
+        "total": 5,
+        "rate": 0.8,
+        "misses": [
+          "markdown-03"
+        ]
+      },
+      "multilingual": {
+        "count": 5,
+        "total": 5,
+        "rate": 1.0,
+        "misses": []
+      },
+      "quoted": {
+        "count": 5,
+        "total": 5,
+        "rate": 1.0,
+        "misses": []
+      },
+      "role": {
+        "count": 5,
+        "total": 5,
+        "rate": 1.0,
+        "misses": []
+      },
+      "split": {
+        "count": 5,
+        "total": 5,
+        "rate": 1.0,
+        "misses": []
+      },
+      "tool-json": {
+        "count": 5,
+        "total": 5,
+        "rate": 1.0,
+        "misses": []
+      },
+      "unicode": {
+        "count": 5,
+        "total": 5,
+        "rate": 1.0,
+        "misses": []
+      }
+    }
+  },
+  "measured_on": "2026-10-29",
+  "tolerance_cases": {
+    "detection": 0,
+    "hidden_removal": 0,
+    "required_flags": 0,
+    "false_positive_medium": 0,
+    "false_positive_high": 0,
+    "per_technique": 0,
+    "sentinel_leaks": 0
+  }
+}

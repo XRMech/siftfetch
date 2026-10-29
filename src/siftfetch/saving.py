@@ -41,6 +41,16 @@ def data_dir() -> Path:
     return Path(base) / "siftfetch"
 
 
+def download_dir() -> Path:
+    """Generic download root; persistent records continue to use data_dir."""
+    from siftfetch import egress_policy
+    moved = os.environ.get("SIFTFETCH_DOWNLOAD_DIR")
+    if moved:
+        return Path(moved).expanduser()
+    moved = egress_policy._config().get("download_dir")
+    return Path(moved).expanduser() if moved else data_dir()
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 

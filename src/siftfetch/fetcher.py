@@ -30,7 +30,7 @@ from siftfetch.egress_policy import EgressDenied
 
 _COOKIE_TIMEOUT = 5.0  # seconds to wait for browser cookie store before giving up
 
-_AGENT_NAME = "agent-web-fetch/1.0 (research agent"
+_AGENT_NAME = "agent-web-fetch/1.0 (automated client"
 
 
 def _user_agent() -> str:
@@ -396,7 +396,9 @@ def _watchdog(client: httpx.Client, deadline: float | None) -> Iterator[None]:
     if deadline is None:
         yield
         return
-    timer = threading.Timer(max(0.0, deadline - time.monotonic()), client.close)
+    # Windows timer waits can end ~15 ms early; firing a little after the
+    # deadline lets callers tell this close apart from a real network error.
+    timer = threading.Timer(max(0.0, deadline - time.monotonic()) + 0.05, client.close)
     timer.daemon = True
     timer.start()
     try:
@@ -409,7 +411,8 @@ def _watchdog(client: httpx.Client, deadline: float | None) -> Iterator[None]:
 def checked_response(url: str, *, browser: str = "none", timeout: float = _TIMEOUT,
                      stream: bool, session_kind: str = "unattended",
                      deadline: float | None = None,
-                     raise_status: bool = True) -> Iterator[httpx.Response]:
+                     raise_status: bool = True,
+                     request_headers: dict[str, str] | None = None) -> Iterator[httpx.Response]:
     """Yield the final response after policy-checking and following each hop.
 
     With stream=True the body is not read yet; the caller reads it inside the
@@ -449,6 +452,17 @@ def checked_response(url: str, *, browser: str = "none", timeout: float = _TIMEO
                 raise httpx.ReadTimeout("total fetch deadline passed")
             host = urlsplit(current).hostname
             headers = dict(base_headers)
+            on_start_origin = on_start_origin and egress_policy._origin_of(current) == start_origin
+            custom = request_headers if on_start_origin else None
+            if custom:
+                # User-supplied cookies are data, not owner browser credentials.
+                decision = egress_policy.check_url(current, op="fetch", tool="siftfetch",
+                    extra=[(f"header:{k}", v) for k, v in custom.items()])
+                if decision.action != "allow":
+                    raise EgressDenied(decision)
+                for key, value in custom.items():
+                    headers = {k: v for k, v in headers.items() if k.lower() != key.lower()}
+                    headers[key] = value
             # Generated headers (the User-Agent carries the contact alias) are
             # checked with the URL: a misconfigured alias never leaves.
             backend.pins[host] = _checked_address(current, headers=headers)

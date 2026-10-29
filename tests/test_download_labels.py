@@ -44,12 +44,14 @@ def test_hidden_html_download(download):
     assert result["status"] == "quarantined"
 
 
-def test_large_text_partial_and_binary_not_scanned(download):
+def test_large_text_partial_and_binary_not_scanned(download, monkeypatch):
     result = download(b"Ordinary documentation. " * 100000)
     assert result["scan_status"] == "partially scanned" and not result["complete"]
     assert result["status"] == "quarantined"
+    import sys
+    monkeypatch.setitem(sys.modules, "pypdf", None)
     result = download(b"%PDF-1.7\x00\xffbinary", expect="pdf", content_type="application/pdf")
-    assert result["scan_status"] == "not scanned" and result["risk"] == "not scanned"
+    assert result["scan_status"] == "text not scanned (no PDF extractor)" and result["risk"] == "not scanned"
 
 
 def test_clean_text_and_charset_errors(download):

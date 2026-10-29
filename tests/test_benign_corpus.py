@@ -21,7 +21,7 @@ COMMANDS = [
     "grep -o parser src/main.py", "findstr /s TODO src/*.py", "ls src", "ls .*",
     "cat src/main.py", "head -20 README.md", "tail -10 README.md", "wc -l README.md",
     "cp src/main.py backup.py", "mv backup.py copy.py", "mkdir output",
-    "curl https://docs.python.org/3/", "curl -O https://docs.python.org/3/index.html",
+    "curl https://docs.python.org/3/", "curl -o index.html https://docs.python.org/3/index.html",
     "tar -tf archive.tar -C output", "echo ready", "pwd", "date", "whoami",
     "Get-ChildItem src", "Get-Content src/main.py", "Copy-Item src/main.py backup.py",
     "Move-Item backup.py copy.py", "Select-String TODO src/main.py", "Get-Date",
@@ -47,4 +47,8 @@ def test_benign_call(tmp_path, monkeypatch, capsys, tool, tool_input):
     start = time.perf_counter()
     assert hook.main() == 0
     assert time.perf_counter() - start < .2
-    assert capsys.readouterr().out == ""
+    output = capsys.readouterr().out
+    if tool_input.get("command", "").startswith("curl "):
+        assert json.loads(output)["hookSpecificOutput"]["permissionDecision"] == "allow"
+    else:
+        assert output == ""

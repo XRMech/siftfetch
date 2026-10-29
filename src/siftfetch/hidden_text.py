@@ -182,6 +182,10 @@ def _background(style: dict[str, str], inherited):
 def _subtree_reason(el: Tag, style: dict[str, str], opacity: float) -> str | None:
     if el.get(BROWSER_ATTR):
         return str(el[BROWSER_ATTR])
+    if str(el.get("aria-hidden", "")).lower() == "true":
+        return "aria-hidden"
+    if el.name == "noscript":
+        return "scripting fallback"
     if el.name == "template" or el.has_attr("hidden"):
         return "hidden element"
     if style.get("display", "").startswith("none"):
@@ -294,6 +298,12 @@ def mark_hidden(soup: BeautifulSoup, start_marker: str = "[HIDDEN FROM READERS:"
             continue
         if not concealed(reason) and not suspicious(text):
             continue
+        # Markdown converters can repeat a title outside the hidden label.
+        # Preserve the value within this region instead of duplicating it.
+        for node in [el, *el.find_all(True)]:
+            title = node.attrs.pop("title", None)
+            if title and title not in text:
+                el.append(NavigableString(f" [attribute title: {title}] "))
         el.insert(0, NavigableString(f" {start_marker} {reason}] "))
         el.append(NavigableString(f" {end_marker} "))
         marked.append(reason)

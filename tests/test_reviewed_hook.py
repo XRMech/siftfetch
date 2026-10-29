@@ -16,7 +16,9 @@ def invoke(tmp_path, monkeypatch, capsys):
         {"label": "email", "kind": "email", "value": "synthetic@mail.test", "class": "exact"},
         {"label": "town", "kind": "text", "value": "Springfield", "class": "soft"}
     ]}), encoding="utf-8")
-    (policy / "config.json").write_text('{"guard_lock": true}', encoding="utf-8")
+    # These regressions isolate pre-existing path/value guards; B8 routing has
+    # its own integration and precedence tests in test_shell_fetch.py.
+    (policy / "config.json").write_text('{"guard_lock": true, "shell_fetch": "off"}', encoding="utf-8")
     monkeypatch.setenv("SIFTFETCH_HOME", str(policy))
     monkeypatch.setenv("SIFTFETCH_DATA", str(tmp_path / "data"))
     monkeypatch.setattr(ep, "_cached", None)
@@ -170,7 +172,7 @@ def test_guard_write_routes(invoke, tmp_path, template):
     target.write_text("{}", encoding="utf-8")
     command = template.format(file=target.as_posix(), folder=folder.as_posix())
     assert invoke("PowerShell", command=command)["permissionDecision"] == "deny", command
-    (invoke.policy / "config.json").write_text('{"guard_lock": false}', encoding="utf-8")
+    (invoke.policy / "config.json").write_text('{"guard_lock": false, "shell_fetch": "off"}', encoding="utf-8")
     ep._cached = None
     assert invoke("PowerShell", command=command) is None, command
 
@@ -394,8 +396,56 @@ def test_pre_policy_exception_fails_closed(invoke, monkeypatch, stage):
     monkeypatch.setattr(hook, stage, fail)
     result = invoke('Bash', command='cat notes.txt')
     assert result['permissionDecision'] == 'deny'
-    assert 'malformed_input' in result['permissionDecisionReason']
+    assert 'guard_error: RuntimeError' in result['permissionDecisionReason']
+    assert 'synthetic' not in result['permissionDecisionReason']
     monkeypatch.setattr(hook, stage, original)
+
+
+def test_unresolvable_cloud_drive_path_is_checked_lexically(invoke, monkeypatch):
+    # ShareFile-style drivers raise WinError 1005 from the final-path query.
+    # Only S: fails, so pytest's own path handling keeps working mid-test.
+    original = hook.os.path.realpath
+    def refuse(path, *args, **kwargs):
+        if str(path).upper().startswith('S:'):
+            raise OSError(1005, 'The volume does not contain a recognized file system')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(hook.os.path, 'realpath', refuse)
+    assert invoke('Bash', command=r'ls "S:\Share\FM\FM2s6"') is None
+    # The lexical check still guards the policy folder on such a drive.
+    assert invoke('Bash', command=f'cat "{invoke.policy}/config.json"')['permissionDecision'] == 'deny'
+
+
+@pytest.mark.parametrize('command', [
+    "grep -n 'Task<.*> ApplyDisplayAdjustmentsAsync' Imaging/ImageManager.cs",
+    'grep -n "List<.*>" a.cs', "echo 'x <.env'",
+])
+def test_quoted_angle_bracket_is_not_a_dotenv_redirect(invoke, command):
+    # A generic-type grep pattern used to read as an input redirect from '.*'.
+    assert invoke('Bash', command=command) is None
+
+
+@pytest.mark.parametrize('command', [
+    'cat < .env', 'grep x < .*', "bash -c 'cat < .env'", "grep -n 'x' a.cs; cat < .env",
+])
+def test_real_dotenv_redirects_stay_denied(invoke, command):
+    assert 'secret_file' in invoke('Bash', command=command)['permissionDecisionReason']
+
+
+def test_guard_error_names_os_code_but_not_values_or_paths(invoke, monkeypatch):
+    def fail(*args, **kwargs):
+        raise OSError(5, 'Access is denied', r'C:\secret\synthetic@mail.test.txt')
+    monkeypatch.setattr(hook, '_names_policy', fail)
+    reason = invoke('Bash', command='cat notes.txt')['permissionDecisionReason']
+    assert 'guard_error: OSError [errno 5] Access is denied' in reason
+    assert 'synthetic' not in reason and 'secret' not in reason
+
+
+def test_malformed_input_names_parse_cause_and_redacts_policy(invoke, monkeypatch, capsys):
+    monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(b'{not json')))
+    assert hook.main() == 0
+    reason = json.loads(capsys.readouterr().out)['hookSpecificOutput']['permissionDecisionReason']
+    assert 'malformed_input' in reason and 'JSONDecodeError' in reason
+    assert hook._redact_policy(f'x {invoke.policy} y .siftfetch z').count('<policy folder>') == 2
     assert invoke('Bash', command='cat notes.txt') is None
 
 @pytest.mark.parametrize('host', ['127.0.0.2', '127.255.1.9', '[::1]', 'localhost', 'TEST-PC', '192.168.1.77', '.', '?'])

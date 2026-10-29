@@ -3,6 +3,10 @@
 identifiers.json
 exceptions.json
 /config.json
+identifiers.toml
+exceptions.toml
+/config.toml
+!src/siftfetch/templates/*.json
 egress-decisions.jsonl
 .env
 .env.*
@@ -19,5 +23,8 @@ build/
 
 # Local test and run output
 .test-runs/
+.test-temp/
+.test-tmp-b2-*/
+.test-cache-b2*/
 runs/
 *.log
