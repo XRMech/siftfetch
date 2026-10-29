@@ -508,7 +508,15 @@ def checked_response(url: str, *, browser: str = "none", timeout: float = _TIMEO
             # Response cookies never persist: httpx would otherwise replay a
             # Set-Cookie from one hop on the next.
             client.cookies.clear()
-            resp = client.send(client.build_request("GET", current, headers=headers),
+            hop_timeout = httpx.USE_CLIENT_DEFAULT
+            if deadline is not None:
+                # No single wait outlasts the deadline, even where the watchdog's
+                # shutdown doesn't wake a read; the watchdog still fires first.
+                left = max(0.0, deadline - time.monotonic()) + 0.1
+                hop_timeout = httpx.Timeout(connect=min(5.0, left), read=min(timeout, left),
+                                            write=min(5.0, left), pool=min(2.0, left))
+            resp = client.send(client.build_request("GET", current, headers=headers,
+                                                    timeout=hop_timeout),
                                stream=stream)
             client.cookies.clear()
             if not (resp.is_redirect and "location" in resp.headers):
