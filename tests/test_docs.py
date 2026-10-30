@@ -15,13 +15,18 @@ DOCS += sorted((ROOT / 'docs').rglob('*.md'))
 def test_documentation_lint():
     for path in DOCS:
         text = path.read_text(encoding='utf-8')
-        assert text.startswith('---\n'), path
-        front, body = text[4:].split('\n---\n', 1)
-        for field in ('topic', 'status', 'last-updated'):
-            assert re.search(r'^' + field + r': .+$', front, re.M), (path, field)
-        verified = re.search(r'^last-updated: (\d{4}-\d{2}-\d{2})$', front, re.M)
-        assert verified and date.fromisoformat(verified[1]) <= date.today(), path
-        router = path.name in ('README.md', 'SETUP.md', 'index.md')
+        if path.name == 'README.md':
+            # The human landing page on GitHub and PyPI, which render front matter as a table.
+            assert not text.startswith('---\n'), path
+            body = text
+        else:
+            assert text.startswith('---\n'), path
+            front, body = text[4:].split('\n---\n', 1)
+            for field in ('topic', 'status', 'last-updated'):
+                assert re.search(r'^' + field + r': .+$', front, re.M), (path, field)
+            verified = re.search(r'^last-updated: (\d{4}-\d{2}-\d{2})$', front, re.M)
+            assert verified and date.fromisoformat(verified[1]) <= date.today(), path
+        router = path.name in ('SETUP.md', 'index.md')
         assert len(text) / 4 <= (440 if router else 1650), (path, len(text) / 4)
         assert not re.search(r'\b(today|yesterday|tomorrow|recently|last week|next week)\b', body, re.I), path
         fenced = False
