@@ -12,8 +12,12 @@ license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.11"
 authors = [{ name = "Clinton Campbell" }]
 classifiers = [
+    "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
-    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
     "Topic :: Security",
 ]
 dependencies = [
@@ -46,6 +50,7 @@ siftfetch-hook = "siftfetch.hook:main"
 
 [project.urls]
 Homepage = "https://github.com/XRMech/siftfetch"
+Issues = "https://github.com/XRMech/siftfetch/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

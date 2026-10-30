@@ -1,13 +1,13 @@
 ---
 topic: install
 status: verified
-last-updated: 2026-10-28
+last-updated: 2026-10-30
 ---
 
 # Install
 Use Python 3.11+. This repository is standalone; no other host infrastructure is needed. Never enter personal data through an agent.
 
-For stable hook interpreter paths, prefer `pipx install C:/path/to/siftfetch` or `uv tool install C:/path/to/siftfetch`. Publication is owner-run; these examples install a local checkout. Run `siftfetch setup` for the five-prompt wizard, or the installed Python's `-m siftfetch setup`. Setup refuses temporary interpreters; avoid ephemeral uvx/cache environments.
+For stable hook interpreter paths, prefer `pipx install "siftfetch[pdf] @ git+https://github.com/XRMech/siftfetch"` or `uv tool install "siftfetch[pdf] @ git+https://github.com/XRMech/siftfetch"`; a local checkout path works the same way. SiftFetch is not yet on PyPI. Run `siftfetch setup` for the five-prompt wizard, or the installed Python's `-m siftfetch setup`. Setup refuses temporary interpreters; avoid ephemeral uvx/cache environments.
 
 ```powershell
 siftfetch setup --preset standard --client claude --client codex --scope user
@@ -23,7 +23,7 @@ python -m venv .venv
 .venv/Scripts/python.exe -m siftfetch init
 ```
 
-POSIX uses .venv/bin/python. Installation requires package access; tests do not. Python tomllib handles TOML without added dependencies. Detector patterns, PSL and init templates are packaged. Windows is verified; other platforms require verification.
+POSIX uses .venv/bin/python. Installation requires package access; tests do not. Python tomllib handles TOML without added dependencies. Detector patterns, PSL and init templates are packaged. CI verifies Windows, macOS and Linux with Python 3.11 to 3.13; live client hooks are owner-verified on Windows.
 
 | Extra | Purpose |
 |---|---|
