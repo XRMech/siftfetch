@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 560" width="1000" height="560" role="img" aria-labelledby="title desc">
+  <title id="title">SiftFetch architecture</title>
+  <desc id="desc">An AI agent reaches the web only through SiftFetch's hook, MCP server or library. Outgoing requests pass an outbound check. Incoming pages are cleaned of hidden text, scanned and graded, then spotlighted and enveloped before the agent sees them.</desc>
+  <style>
+    svg { --bg: #ffffff; --panel: #f6f8fa; --line: #d0d7de; --text: #1f2328; --muted: #59636e;
+          --out: #0969da; --out-bg: #ddf4ff; --in: #1a7f37; --in-bg: #dafbe1; --warn: #cf222e; --warn-bg: #ffebe9; }
+    @media (prefers-color-scheme: dark) {
+      svg { --bg: #0d1117; --panel: #161b22; --line: #3d444d; --text: #e6edf3; --muted: #9198a1;
+            --out: #4493f8; --out-bg: #0c2d6b; --in: #3fb950; --in-bg: #0f3a1d; --warn: #f85149; --warn-bg: #5d1a1a; }
+    }
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--text); }
+    .bg { fill: var(--bg); }
+    .panel { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; }
+    .box { fill: var(--bg); stroke: var(--line); stroke-width: 1.5; }
+    .out { fill: var(--out-bg); stroke: var(--out); stroke-width: 1.5; }
+    .in { fill: var(--in-bg); stroke: var(--in); stroke-width: 1.5; }
+    .warn { fill: var(--warn-bg); stroke: var(--warn); stroke-width: 1.5; }
+    .h { font-size: 17px; font-weight: 600; }
+    .t { font-size: 15px; font-weight: 600; }
+    .s { font-size: 12.5px; fill: var(--muted); }
+    .lbl { font-size: 12.5px; font-weight: 600; }
+    .lo { fill: var(--out); } .li { fill: var(--in); } .lw { fill: var(--warn); }
+    .ao { stroke: var(--out); stroke-width: 2.5; fill: none; }
+    .ai { stroke: var(--in); stroke-width: 2.5; fill: none; }
+    .mo { fill: var(--out); } .mi { fill: var(--in); }
+  </style>
+  <defs>
+    <marker id="ho" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mo" d="M0 0 L10 5 L0 10 z"/></marker>
+    <marker id="hi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mi" d="M0 0 L10 5 L0 10 z"/></marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1000" height="560" rx="12"/>
+
+  <!-- Agent -->
+  <rect class="box" x="20" y="130" width="160" height="260" rx="10"/>
+  <text class="h" x="100" y="165" text-anchor="middle">AI agent</text>
+  <text class="s" x="100" y="200" text-anchor="middle">Claude Code</text>
+  <text class="s" x="100" y="222" text-anchor="middle">Codex</text>
+  <text class="s" x="100" y="244" text-anchor="middle">your Python tool</text>
+  <line x1="40" y1="270" x2="160" y2="270" stroke="var(--line)"/>
+  <text class="s" x="100" y="296" text-anchor="middle">sees only</text>
+  <text class="s" x="100" y="314" text-anchor="middle">labeled content,</text>
+  <text class="s" x="100" y="332" text-anchor="middle">never raw pages</text>
+
+  <!-- SiftFetch panel -->
+  <rect class="panel" x="220" y="40" width="600" height="440" rx="12"/>
+  <text class="h" x="240" y="72">SiftFetch</text>
+
+  <!-- Entry points -->
+  <rect x="232" y="88" width="166" height="250" rx="10" fill="none" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text class="s" x="244" y="106">entry points</text>
+  <rect class="box" x="240" y="116" width="150" height="62" rx="8"/>
+  <text class="t" x="255" y="142">Hook</text>
+  <text class="s" x="255" y="162">guards tool calls</text>
+  <rect class="box" x="240" y="192" width="150" height="62" rx="8"/>
+  <text class="t" x="255" y="218">MCP server</text>
+  <text class="s" x="255" y="238">fetch_url · search_web</text>
+  <rect class="box" x="240" y="268" width="150" height="62" rx="8"/>
+  <text class="t" x="255" y="294">Python library</text>
+  <text class="s" x="255" y="314">siftfetch.tools</text>
+
+  <!-- Outbound lane -->
+  <rect class="out" x="430" y="104" width="370" height="78" rx="8"/>
+  <text class="t" x="448" y="132">1 · Outbound check</text>
+  <text class="s" x="448" y="154">your listed identifiers and credentials can't leave;</text>
+  <text class="s" x="448" y="171">blocked domains; DNS pinned; size and time budgets</text>
+
+  <!-- Inbound lane -->
+  <rect class="in" x="686" y="236" width="114" height="124" rx="8"/>
+  <text class="t" x="698" y="262">2 · Clean</text>
+  <text class="s" x="698" y="285">hidden text</text>
+  <text class="s" x="698" y="303">found and</text>
+  <text class="s" x="698" y="321">marked: CSS,</text>
+  <text class="s" x="698" y="339">comments, …</text>
+  <rect class="in" x="553" y="236" width="115" height="124" rx="8"/>
+  <text class="t" x="565" y="262">3 · Scan</text>
+  <text class="s" x="565" y="285">known attacks,</text>
+  <text class="s" x="565" y="303">agent-directed</text>
+  <text class="s" x="565" y="321">cues; graded</text>
+  <text class="s" x="565" y="339">none … high</text>
+  <rect class="in" x="420" y="236" width="115" height="124" rx="8"/>
+  <text class="t" x="432" y="262">4 · Label</text>
+  <text class="s" x="432" y="285">spotlight and</text>
+  <text class="s" x="432" y="303">flag, then</text>
+  <text class="s" x="432" y="321">fence in an</text>
+  <text class="s" x="432" y="339">envelope</text>
+
+  <!-- Side outputs -->
+  <rect class="box" x="240" y="404" width="170" height="56" rx="8"/>
+  <text class="t" x="255" y="428">Sightings log</text>
+  <text class="s" x="255" y="447">what was caught, where</text>
+  <rect class="warn" x="425" y="404" width="180" height="56" rx="8"/>
+  <text class="t" x="440" y="428">Quarantine</text>
+  <text class="s" x="440" y="447">risky saves and downloads</text>
+  <rect class="box" x="620" y="404" width="180" height="56" rx="8"/>
+  <text class="t" x="635" y="428">Owner policy</text>
+  <text class="s" x="635" y="447">agent reads denied</text>
+
+  <!-- The web -->
+  <rect class="box" x="860" y="104" width="120" height="238" rx="10"/>
+  <text class="h" x="920" y="140" text-anchor="middle">The web</text>
+  <text class="s" x="920" y="172" text-anchor="middle">pages</text>
+  <text class="s" x="920" y="192" text-anchor="middle">search results</text>
+  <text class="s" x="920" y="212" text-anchor="middle">downloads</text>
+  <rect class="warn" x="874" y="244" width="92" height="76" rx="8"/>
+  <text class="lbl lw" x="920" y="266" text-anchor="middle">may hide</text>
+  <text class="lbl lw" x="920" y="284" text-anchor="middle">instructions</text>
+  <text class="lbl lw" x="920" y="302" text-anchor="middle">for agents</text>
+
+  <!-- Arrows: request path -->
+  <path class="ao" d="M180 170 H226" marker-end="url(#ho)"/>
+  <text class="lbl lo" x="184" y="160">request</text>
+  <path class="ao" d="M398 143 H422" marker-end="url(#ho)"/>
+  <path class="ao" d="M800 143 H852" marker-end="url(#ho)"/>
+
+  <!-- Arrows: content path -->
+  <path class="ai" d="M860 296 H808" marker-end="url(#hi)"/>
+  <text class="lbl li" x="834" y="284" text-anchor="middle">raw</text>
+  <path class="ai" d="M686 296 H676" marker-end="url(#hi)"/>
+  <path class="ai" d="M553 296 H543" marker-end="url(#hi)"/>
+  <path class="ai" d="M420 296 H406" marker-end="url(#hi)"/>
+  <path class="ai" d="M232 300 H188" marker-end="url(#hi)"/>
+  <text class="lbl li" x="184" y="290">labeled</text>
+
+  <!-- Hook footnote -->
+  <text class="s" x="500" y="520" text-anchor="middle">The hook also denies built-in web tools that skip cleaning, reroutes curl and wget through SiftFetch,</text>
+  <text class="s" x="500" y="540" text-anchor="middle">and guards policy and secret files. Labels inform the model; they can't force its behavior.</text>
+</svg>
