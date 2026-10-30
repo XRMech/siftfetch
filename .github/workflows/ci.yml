@@ -39,3 +39,16 @@ jobs:
           python-version: "3.12"
       - name: Wheel release check (PDF and no-PDF)
         run: python tools/cleanroom.py
+
+  # The one check branch protection requires: it passes only when every
+  # matrix job passed, so adding a Python version needs no ruleset edit.
+  ci-ok:
+    if: always()
+    needs: [test, cleanroom]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All jobs passed
+        env:
+          TEST: ${{ needs.test.result }}
+          CLEANROOM: ${{ needs.cleanroom.result }}
+        run: test "$TEST" = success && test "$CLEANROOM" = success
