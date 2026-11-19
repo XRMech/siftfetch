@@ -1,8 +1,8 @@
 # SiftFetch
 
-**Clean web content before your AI agent reads it.**
+On four synthetic pages, SiftFetch’s default view kept the required evidence and used 37.9% fewer MiniLM WordPiece tokens than the HTML (1,707 versus 2,750, including the response envelopes). The reference page’s smaller readability view lost a calibration value. [Reproduce the benchmark](docs/extraction-benchmark.md)
 
-SiftFetch sits between AI coding agents (Claude Code, Codex or your own Python tool) and the web. It strips text hidden from human readers, scans for instructions aimed at the agent, grades the risk, and hands the agent fenced, labeled content instead of raw HTML. It also checks what goes out, so your listed personal details and credentials don't leave in a URL, header or search query.
+SiftFetch cleans web content for Claude Code, Codex and Python tools. It marks hidden text, grades suspected instructions, labels outside content and checks outbound URLs, headers and search queries for protected values.
 
 <p align="center">
   <img src="docs/images/architecture.svg" width="900" alt="An AI agent reaches the web only through SiftFetch's hook, MCP server or Python library. Requests pass an outbound check before leaving. Pages coming back are cleaned of hidden text, scanned and graded, then spotlighted and fenced in an envelope before the agent sees them. Risky saves go to quarantine, detections go to a sightings log, and agent reads of the owner's policy are denied.">
@@ -46,6 +46,8 @@ The real documentation comes through intact. The attack stays visible as evidenc
 | Agent hooks | Routes Claude Code and Codex web access through SiftFetch: denies built-in web tools that skip cleaning and reroutes `curl`-style shell fetches |
 | Sightings log | Local record of what was detected and where, for later review |
 | Lockdown (optional) | Guards SiftFetch's own settings, policy and secret files against edits by the agent |
+
+[MCP reading tools](docs/mcp-tools.md) offer richer views, selected-image OCR, panels and reviewed next-page links.
 
 ## Quick start
 

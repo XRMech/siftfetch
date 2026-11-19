@@ -46,6 +46,12 @@ except EgressDenied as exc:
 ```
 
 ## Existing helper exports
+
+### Public HTML snapshots
+
+Use the [Python snapshot API](snapshots.md) for repeat reads, images and navigation. Hosts can give each conversation a [private MCP client](host-flow.md). [Site registers](site-cases.md) support offline review of failed pulls and detection candidates.
+
+### Offline benchmark
 `siftfetch.benchmark.run(corpus_dir=None) -> dict` is a public offline measurement API. It uses checkout fixtures by default or a local corpus directory, reads no owner policy and writes no sightings. It returns patterns_version, corpus_hash, metrics and per-case results; malformed inputs raise ValueError, KeyError or TypeError, and unavailable files raise OSError. See [benchmark schema and metrics](benchmark.md).
 
 The module also imports `fetch`, `bot_wall`, `list_available_sessions`, `clean_html`, `alternate_source_urls`, `site_api_urls`, `api_payload_to_markdown`, `json_to_markdown`, `present_markdown`, and dataclass `replace`. Existing imports remain available; prefer defining modules for new integrations. Fetch returns an HTTP response, cleaning helpers strings, URL helpers lists, and bot_wall a boolean. Helpers do not replace labeling and enveloping.

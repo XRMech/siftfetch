@@ -7,14 +7,22 @@ the event loop and turn network failures into one-line results. Run it as
 
 from __future__ import annotations
 
+import logging
+from typing import Literal, get_args
+
 import anyio
+import httpx
 from mcp.server.mcpserver import MCPServer
 
+from siftfetch.mcp_navigation import NavigationMode, navigate_once
+from siftfetch.mcp_images import page_images
+from siftfetch.research_flow import PageRead, ResearchFlow, SnapshotUnavailable
 from siftfetch.tools import (  # noqa: F401  (re-exported for callers and tests)
     download_sync,
     fetch_and_save_sync,
     fetch_url_sync,
     guarded,
+    _http_failure,
     list_sessions_sync,
     search_web_sync,
     session_kind,
@@ -22,9 +30,21 @@ from siftfetch.tools import (  # noqa: F401  (re-exported for callers and tests)
 
 mcp = MCPServer("siftfetch")
 
+_PageView = Literal["auto", "readability", "full", "raw", "source"]
+
+# Provider INFO records include full query URLs and raw engine exceptions.
+for _provider_logger in ("primp", "ddgs"):
+    _logger = logging.getLogger(_provider_logger)
+    _logger.setLevel(max(_logger.getEffectiveLevel(), logging.WARNING))
+
 
 async def _network_result(call, operation: str, url: str = ""):
-    return await anyio.to_thread.run_sync(lambda: guarded(call, operation, url))
+    def run():
+        try:
+            return guarded(call, operation, url)
+        except httpx.HTTPStatusError as exc:
+            return _http_failure(exc, operation)
+    return await anyio.to_thread.run_sync(run)
 
 
 @mcp.tool()
@@ -66,6 +86,84 @@ async def fetch_url(
         lambda: fetch_url_sync(url, browser, max_chars, offset, mode, section, extract,
                                show_browser, session_kind(), spotlight), "Fetch", url
     )
+
+
+def _page_view_result(page: PageRead) -> dict:
+    return {"content": page.content, "size_bytes": page.size_bytes, "truncated": page.truncated}
+
+
+@mcp.tool()
+async def fetch_page_images(url: str, operation: Literal["inventory", "ocr", "describe"] = "inventory",
+                            image_number: int | None = None, expected_inventory: str | None = None) -> dict | str:
+    """List static page images or read one selected image with a configured local backend.
+
+    First request the inventory. For OCR or description, supply the 1-based
+    image number and inventory token. The fresh page must match before the
+    tool can fetch the image. Treat labels, OCR and descriptions as external evidence.
+    """
+    return await _network_result(lambda: page_images(url, operation, image_number, expected_inventory),
+                                 "Read page images", url)
+
+
+@mcp.tool()
+async def navigate_page(url: str, mode: NavigationMode, selections: list[int] | None = None,
+                        expected_next_url: str | None = None) -> dict | str:
+    """Inspect a page's panels, next links or offline viewport in one bounded call.
+
+    Omit selections to inspect the inventory. Select by 1-based ordinal. To
+    follow a next link, supply its exact previously reviewed destination.
+    Each invocation starts a new capture and closes it before returning.
+    """
+    return await _network_result(lambda: navigate_once(url, mode, selections, expected_next_url),
+                                 "Navigate", url)
+
+
+@mcp.tool()
+async def fetch_page_views(url: str, views: list[_PageView] | None = None,
+                           include_sizes: bool = False) -> dict | str:
+    """Read selected views of the same public HTML capture in this call.
+
+    views defaults to ["auto"]. Specify up to five distinct views. An empty
+    list with include_sizes=true returns only sizes. Each view uses the
+    standard 30,000-character presentation limit, with labels and provenance.
+    Call-only pages yield the available first read or its size. Each call
+    ends the flow; captures cannot be passed to another tool call.
+    """
+    selected = ["auto"] if views is None else views
+    allowed = get_args(_PageView)
+    if (len(selected) > len(allowed) or any(view not in allowed for view in selected)
+            or len(set(selected)) != len(selected) or not (selected or include_sizes)):
+        raise ValueError("Choose distinct supported views, or request sizes only.")
+
+    def collect():
+        first_view = next((view for view in selected if view != "source"), "auto")
+        with ResearchFlow() as flow:
+            first = flow.fetch(url, extract=first_view)
+            results = {}
+            result = {"status": "ok", "captured_at": first.captured_at, "views": results}
+            if first.handle is None:
+                result["status"] = "call_only"
+            else:
+                try:
+                    for view in selected:
+                        page = first if view == first_view else flow.read(first.handle, extract=view)
+                        results[view] = _page_view_result(page)
+                    if include_sizes:
+                        sizes = {} if len(results) == len(allowed) else flow.view_sizes(first.handle)
+                        sizes.update({view: entry["size_bytes"] for view, entry in results.items()})
+                        result["sizes"] = sizes
+                    return result
+                except SnapshotUnavailable:
+                    # Another active flow can evict this capture under the process budget.
+                    result["status"] = "capture_unavailable"
+            if selected and first_view not in results:
+                results[first_view] = _page_view_result(first)
+            if include_sizes:
+                result["sizes"] = {view: entry["size_bytes"] for view, entry in results.items()}
+                result["sizes"][first_view] = first.size_bytes
+            return result
+
+    return await _network_result(collect, "Fetch", url)
 
 
 @mcp.tool()

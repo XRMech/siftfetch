@@ -1,7 +1,7 @@
 ---
 topic: parameters
 status: verified
-last-updated: 2026-10-27
+last-updated: 2026-11-18
 ---
 
 # Parameters
@@ -32,4 +32,4 @@ Defaults preserve anonymous, unattended fetching. Every redirect is checked befo
 | call, operation, exc | required | Callable, operation label and exception |
 
 ## Extraction limits
-`raw` still removes scripts, styles, iframes and SVG; it is not page source. `source` is unsupported. Extraction cannot recover HTML absent from the response. Alternate-source recovery remains policy checked. Transport caps are 10 MB decoded/60 seconds, browser HTML 15 MB, download 50 MB/120 seconds. DNS can add its system timeout.
+`raw` removes scripts, styles, iframes and SVG. The [Python snapshot follow-up API](../library-api.md#public-html-snapshots) and [MCP fetch_page_views](../mcp-tools.md#multiple-reading-views) support inert decoded HTML via `source`. Extraction cannot recover HTML absent from the response. Alternate-source recovery remains policy checked. Transport caps are 10 MB decoded/60 seconds, browser HTML 15 MB, download 50 MB/120 seconds. DNS can add its system timeout.

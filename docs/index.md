@@ -17,10 +17,13 @@ SiftFetch cleans incoming web content: hidden-text stripping, injection scanning
 | [Configuration](configuration.md) | Change policy |
 | [Environment](environment.md) | Configure host processes |
 | [Sightings](sightings.md) | Review detections |
+| [Field review](field-review.md) | Review external directions and missed detections |
 | [CLI](cli.md) | Run setup commands |
 | [Setup](setup/index.md) | Install clients |
 | [Testing](testing.md) | Run checks |
 | [Benchmark](benchmark.md) | Measure cleaning regressions |
+| [Extraction](extraction-benchmark.md) | Measure view sizes and retained evidence |
+| [Web images](web-images.md) | Read a selected image locally |
 | [Writing](writing-docs.md) | Edit docs |
 
 | Term | Meaning |

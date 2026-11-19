@@ -1,14 +1,17 @@
 ---
 topic: benchmark
 status: verified
-last-updated: 2026-10-29
+last-updated: 2026-10-30
 ---
 
 # Offline cleaning benchmark
+
+[Size and evidence by view](extraction-benchmark.md)
+
 Corpus text is untrusted data. Never execute payloads or fetch their targets. This benchmark measures static detection and text containment, not model attack success. Labels and spotlighting cannot guarantee resistance to prompt injection.
 
 ## Run and interpret
-From a source checkout, run:
+From the checkout:
 
 ```powershell
 .venv/Scripts/python.exe -m siftfetch benchmark
@@ -17,7 +20,7 @@ From a source checkout, run:
 .venv/Scripts/python.exe -m pytest -q tests/test_benchmark.py
 ```
 
-Default: tests/fixtures/benchmark. Installed distributions need `--corpus DIR`. Invalid corpora exit 2; reports exit 0 even with misses. Pytest enforces limits.
+Default: the packaged corpus, so installs need no checkout; tests/fixtures/benchmark holds the same cases. `--corpus DIR` measures another. Invalid corpora exit 2; reports exit 0 even with misses. Pytest enforces limits.
 
 The runner uses `clean_html` defaults (auto extraction, 30,000 characters, metadata and links), the pure helper shared by `label`, and the renderer shared by `envelope`. It uses paragraph spotlight without policy reads, sightings, saved quarantine or network access. Envelope rendering assumes egress enabled.
 
@@ -74,7 +77,7 @@ B8 measured 2026-10-29: two original synthetic PDF-shaped benign cases added. De
 Reader scoring weights address (2), conversation meta-reference (3), obligation (2), concealment (3), data movement (3) and authority (3). Medium requires 5, obligation or authority, and meta-reference, concealment or sensitive data movement. Product output paths and third-person descriptions are discounted. Language-extensible signals remain heuristic.
 
 ## Add a case and review a regression
-Create one short UTF-8 HTML file and one object in [cases.json](../tests/fixtures/benchmark/cases.json). Keep IDs and filenames unique; files must be direct children of the corpus directory. Use original harmless text and reserved targets such as exfil.example or alias@example.invalid.
+Add a UTF-8 HTML file and an entry in [cases.json](../tests/fixtures/benchmark/cases.json). Keep IDs and filenames unique; files must be direct children of the corpus directory. Use original harmless text and reserved targets such as exfil.example or alias@example.invalid.
 
 | Manifest field | Required content |
 |---|---|
@@ -87,4 +90,4 @@ Create one short UTF-8 HTML file and one object in [cases.json](../tests/fixture
 
 For a sighting, keep only relevant markup/CSS; replace personal data and targets with reserved placeholders. Record provenance/edits in SOURCES.md. Never make tests fetch sources. Set expectations independently; include benign controls.
 
-Review misses and outputs before updating [baseline.json](../tests/fixtures/benchmark/baseline.json); tests never overwrite it. Zero tolerances lock detection, techniques, containment, flags and false positives. Benign cases stay below high-candidate. The offline gate checks envelope/spotlight and completes within ten seconds.
+Review misses and outputs before updating [baseline.json](../tests/fixtures/benchmark/baseline.json); tests never overwrite it. Zero tolerances lock detection, techniques, containment, flags and false positives. Benign cases stay below high-candidate. The offline gate checks envelope/spotlight within ten seconds.

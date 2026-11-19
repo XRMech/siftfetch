@@ -36,6 +36,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+claude = ["claude-agent-sdk==0.2.185"]
+images = ["Pillow>=12.2"]
+windows-ocr = [
+    "Pillow>=12.2",
+    "winrt-Windows.Media.Ocr>=3.2; sys_platform == 'win32'",
+    "winrt-Windows.Foundation>=3.2; sys_platform == 'win32'",
+    "winrt-Windows.Graphics.Imaging>=3.2; sys_platform == 'win32'",
+    "winrt-Windows.Storage.Streams>=3.2; sys_platform == 'win32'",
+]
 pdf = ["pypdf>=6"]
 # Real-browser reads for pages behind bot walls (off unless configured).
 browser = ["playwright>=1.48"]

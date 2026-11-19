@@ -13,6 +13,7 @@ network failures into the same one-line results the MCP tools return.
 
 from __future__ import annotations
 
+import http
 import os
 import re
 import socket
@@ -21,9 +22,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
-from ddgs.exceptions import DDGSException, TimeoutException as SearchTimeout
+from ddgs.exceptions import DDGSException, RatelimitException, TimeoutException as SearchTimeout
 
-from siftfetch import browser_fetch, injection_scan, saving
+from siftfetch import browser_fetch, injection_scan, saving, site_cases
 from siftfetch.cleaner import (
     _JS_PAGE_WORDS,
     _word_count,
@@ -36,7 +37,8 @@ from siftfetch.cleaner import (
 )
 from siftfetch.downloader import download_to_staging as _download_to_staging
 from siftfetch.downloader import DownloadRejected
-from siftfetch.fetcher import bot_wall, fetch, list_available_sessions
+from siftfetch.fetcher import FetchBudgetExceeded, _public_read_origin, bot_wall, fetch, list_available_sessions
+from siftfetch.egress_policy import EgressDenied
 from siftfetch.search import search_web as _search_web
 
 
@@ -58,13 +60,16 @@ def _browser_read(url, window, max_chars, offset, mode, section, extract):
     return injection_scan.PreparedText(header + out, source_url=page.url), page.html
 
 
-def _wall_recovery(url, status, max_chars, offset, mode, section, extract):
+def _wall_recovery(url, status, max_chars, offset, mode, section, extract, failure_origin=None):
     """A bot wall answered instead of the page: try the site's official API,
     then a real-browser read if the owner turned that on."""
     parts = []
     for api_url in site_api_urls(url):
         try:
             text = api_payload_to_markdown(fetch(api_url).text, api_url)
+        except EgressDenied:
+            failure_origin = None
+            continue
         except Exception:
             continue
         if _word_count(text) > _JS_PAGE_WORDS:
@@ -77,9 +82,12 @@ def _wall_recovery(url, status, max_chars, offset, mode, section, extract):
         return present_markdown(header + "\n\n---\n\n".join(parts), max_chars=max_chars,
                                 offset=offset, mode=mode, section=section), ""
     if browser_fetch.wanted(url, walled=True):
+        failure_origin = None
         read = _browser_read(url, None, max_chars, offset, mode, section, extract)
         if read:
             return read
+    if failure_origin and status in (403, 429, 503):
+        site_cases.record_failure(failure_origin, "bot_wall")
     return (
         f"*[BOT WALL: {url} answered with an anti-bot block (HTTP {status}) "
         f"instead of the page. No official API is known for this site, and "
@@ -100,7 +108,30 @@ def fetch_url_raw(url, browser="none", max_chars=30000, offset=0, mode="content"
                   session_kind="unattended"):
     """Fetch and clean, unlabeled; returns (markdown, raw body of the page it
     came from). Pass both to ``label`` before showing the text to a model."""
-    if show_browser or browser_fetch.wanted(url, walled=False):
+    return _fetch_url_raw(url, browser, max_chars, offset, mode, section, extract,
+                          show_browser, session_kind)
+
+
+def _mark_public_page(text, response):
+    origin = _public_read_origin(response)
+    if (origin and response.status_code == 200 and "content-range" not in response.headers
+            and response.headers.get("content-type", "").partition(";")[0].strip().lower() == "text/html"
+            and isinstance(text, injection_scan.PreparedText) and not getattr(text, "local_diagnostic", False)
+            and not bot_wall(response.status_code, response.text)):
+        text.verified_public_page_url = str(response.url)
+
+
+def _record_page_scan(text, scan, *, captured_at=None):
+    page_url = getattr(text, "verified_public_page_url", None)
+    if page_url:
+        site_cases.record_detection(page_url, scan, captured_at=captured_at)
+
+
+def _fetch_url_raw(url, browser, max_chars, offset, mode, section, extract,
+                   show_browser, session_kind, on_direct_html=None):
+    attempted_browser = show_browser or browser_fetch.wanted(url, walled=False)
+    anonymous = not attempted_browser and browser == "none"
+    if attempted_browser:
         read = _browser_read(url, "visible" if show_browser else None,
                              max_chars, offset, mode, section, extract)
         if read:
@@ -109,28 +140,45 @@ def fetch_url_raw(url, browser="none", max_chars=30000, offset=0, mode="content"
         resp = fetch(url, browser=browser, session_kind=session_kind)
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code
+        origin = _public_read_origin(exc.response) if anonymous else None
         if not bot_wall(status, exc.response.text):
+            if origin:
+                site_cases.record_failure(origin, "http_error")
             raise
-        return _wall_recovery(url, status, max_chars, offset, mode, section, extract)
+        return _wall_recovery(url, status, max_chars, offset, mode, section, extract, origin)
+    except (httpx.TransportError, httpx.StreamError, httpx.DecodingError, FetchBudgetExceeded) as exc:
+        origin = getattr(exc, "siftfetch_public_read_origin", None)
+        if not origin and isinstance(exc, FetchBudgetExceeded):
+            origin = getattr(exc.__cause__, "siftfetch_public_read_origin", None)
+        if anonymous and origin:
+            site_cases.record_failure(origin, "network_error")
+        raise
+    origin = _public_read_origin(resp) if anonymous else None
     document = _document_text(resp)
     if document is not None:
         return present_markdown(document, max_chars=max_chars, offset=offset,
                                 mode=mode, section=section), ""
     if bot_wall(resp.status_code, resp.text):
         return _wall_recovery(url, resp.status_code, max_chars, offset, mode, section,
-                              extract)
+                              extract, origin)
     out = clean_html(resp.text, url=url, max_chars=max_chars, offset=offset,
                      mode=mode, section=section, extract=extract)
     # Client-rendered pages carry no text in their HTML, so cleaning cannot
     # help. Follow the alternate sources instead: verified per-site rewrites
     # first, then conventional probes (.md/.txt/.json/llms.txt/print view).
-    if "EXTRACTION WARNING" not in out:
+    if not getattr(out, "thin_page", False):
+        if anonymous:
+            _mark_public_page(out, resp)
+        if on_direct_html is not None:
+            on_direct_html(resp)
         return out, resp.text
     tried = []
     for candidate in alternate_source_urls(url)[:8]:
         try:
             alt = fetch(candidate, browser=browser, session_kind=session_kind)
         except Exception as exc:
+            if isinstance(exc, EgressDenied):
+                origin = None
             tried.append(f"{candidate} ({type(exc).__name__})")
             continue
         body = alt.text or ""
@@ -139,7 +187,7 @@ def fetch_url_raw(url, browser="none", max_chars=30000, offset=0, mode="content"
             recovered = json_to_markdown(body)
         if not recovered and _word_count(body) > _JS_PAGE_WORDS:
             recovered = clean_html(body, url=candidate, max_chars=0, extract=extract)
-        if _word_count(recovered) > _JS_PAGE_WORDS:
+        if _word_count(recovered) > _JS_PAGE_WORDS and not getattr(recovered, "thin_page", False):
             header = (
                 f"*[RECOVERED via alternate source: the requested page is "
                 f"client-rendered and its HTML held no text. Content below "
@@ -149,6 +197,8 @@ def fetch_url_raw(url, browser="none", max_chars=30000, offset=0, mode="content"
             return present_markdown(header + recovered, max_chars=max_chars,
                                     offset=offset, mode=mode, section=section), body
         tried.append(f"{candidate} (thin)")
+    if origin:
+        site_cases.record_failure(origin, "thin_page")
     return out + (
         f"\n\n*[Alternate sources tried and rejected: {'; '.join(tried)}. "
         f"This page likely needs a real-browser read.]*"
@@ -272,6 +322,7 @@ def fetch_url_sync(url, browser="none", max_chars=30000, offset=0, mode="content
     out, raw = fetch_url_raw(url, browser, max_chars, offset, mode, section, extract,
                              show_browser, session_kind)
     labeled, scan = label(out, raw, url=url, tool="fetch_url", spotlight=spotlight)
+    _record_page_scan(out, scan)
     return injection_scan.envelope(labeled, url, scan)
 
 
@@ -290,6 +341,7 @@ def search_web_sync(query: str, max_results: int = 5) -> list[dict]:
             "provenance": "untrusted-web",
             "risk": worst,
             "spotlight": scan.spotlight,
+            **({"quality_flags": item["quality_flags"]} if "quality_flags" in item else {}),
         })
     return results
 
@@ -299,7 +351,10 @@ def fetch_and_save_sync(url, name, browser="none", overwrite=False, max_chars=0,
     """Fetch and grade, then save -- or quarantine and save nothing."""
     resp = fetch(url, browser=browser, session_kind=session_kind)
     cleaned = clean_html(resp.text, url=url, max_chars=max_chars)
+    if browser == "none":
+        _mark_public_page(cleaned, resp)
     labeled, scan = label(cleaned, resp.text, url=url, tool="fetch_and_save")
+    _record_page_scan(cleaned, scan)
     title = next((line[2:].strip() for line in cleaned.split("\n") if line.startswith("# ")), "")
     if scan.quarantined:
         held = saving.quarantine(labeled, url, title, scan_record(scan), "fetch_and_save")
@@ -329,6 +384,16 @@ def get_substitute(kind: str | None = None) -> dict[str, str]:
 NETWORK_ERRORS = (httpx.TransportError, DDGSException, DownloadRejected)
 
 
+def _http_failure(exc: httpx.HTTPStatusError, operation: str) -> str:
+    """Format the numeric status with its standard name, omitting remote reason text and URL."""
+    status = exc.response.status_code
+    try:
+        phrase = http.HTTPStatus(status).phrase
+    except ValueError:
+        phrase = "unrecognized status"
+    return f"{operation} failed (http_error): HTTP {status} {phrase}."
+
+
 def network_failure(exc: Exception, operation: str, url: str = "") -> str:
     """One labeled line for a network failure: timed out, could not resolve,
     connection refused, or a generic failure."""
@@ -337,9 +402,14 @@ def network_failure(exc: Exception, operation: str, url: str = "") -> str:
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         causes.append(current)
-        current = current.__cause__ or current.__context__
+        if isinstance(current, DDGSException) and current.args and isinstance(current.args[0], Exception):
+            current = current.args[0]
+        else:
+            current = current.__cause__ or current.__context__
     messages = " ".join(str(c).lower() for c in causes)
-    if (any(isinstance(c, (httpx.TimeoutException, SearchTimeout, TimeoutError)) for c in causes)
+    if any(isinstance(c, RatelimitException) for c in causes):
+        detail = "rate limited by search provider"
+    elif (any(isinstance(c, (httpx.TimeoutException, SearchTimeout, TimeoutError)) for c in causes)
             or isinstance(exc, DownloadRejected) and exc.reason == "timeout"
             or "timed out" in messages or "timeout" in messages):
         detail = "timed out"

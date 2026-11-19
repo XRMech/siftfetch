@@ -12,7 +12,7 @@ Hidden text is removed or marked. Scanning combines known patterns with reader-d
 
 Hard-wrapped prose splits at sentence-ending lines/page markers with a 900-character cap; short instruction continuations still join. Optional PDF extraction scans text, not images or OCR. Missing extraction is reported plainly.
 
-Attribute labels expose accessibility text, metadata, SVG and JSON fields (32,768 characters); presence alone does not raise risk. Decoding caps: 128 attempts, 8,192 characters/run, 32,768 bytes, two layers; data URIs excluded. Multilingual, mixed-script, tool-shaped, reference-image and URL-template instructions are checked. Inactive code examples stay below medium.
+Attribute inventory over 4,096 characters follows the article and is scanned separately. Exceeding 32,768 value characters grades incomplete/high. Decoding caps are 128 attempts, 8,192 characters/run, 32,768 bytes and two layers. Data URIs are excluded. Checks cover multilingual, mixed-script, tool-shaped, image and URL-template instructions. Inactive code stays below medium.
 
 Standard denies Claude WebFetch/WebSearch and disables Codex web_search because they bypass cleaning. Chrome PostToolUse labels supported outputs without the full fetch pipeline. Hook/transport coverage limits routing.
 

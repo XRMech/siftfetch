@@ -87,6 +87,9 @@ class _Handler(socketserver.BaseRequestHandler):
     server: "_Server"
 
     def handle(self) -> None:
+        if self.server.offline:
+            # A rendered snapshot has no network capability, including CONNECT.
+            return
         client: socket.socket = self.request
         client.settimeout(_IDLE_S)
         upstream = None
@@ -146,8 +149,9 @@ class _Server(socketserver.ThreadingTCPServer):
     daemon_threads = True
     allow_reuse_address = False
 
-    def __init__(self) -> None:
+    def __init__(self, *, offline: bool = False) -> None:
         super().__init__(("127.0.0.1", 0), _Handler)
+        self.offline = offline
         # Host names only, for tests and diagnostics; never URLs or values.
         self.refused: list[str] = []
         self.connected: list[str] = []
@@ -156,8 +160,11 @@ class _Server(socketserver.ThreadingTCPServer):
 class EgressProxy:
     """``with EgressProxy() as proxy:`` then launch with ``proxy.launch_args``."""
 
+    def __init__(self, *, offline: bool = False) -> None:
+        self._offline = offline
+
     def __enter__(self) -> "EgressProxy":
-        self._server = _Server()
+        self._server = _Server(offline=self._offline)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         return self
