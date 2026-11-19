@@ -1,6 +1,7 @@
 """Tests for the policy-checked fetcher: hops, cookies, pinning. No public network."""
 
 import json
+import logging
 import threading
 from pathlib import Path
 import time
@@ -20,11 +21,20 @@ EMAIL = "pat.example@mailhost.test"
 class _Handler(BaseHTTPRequestHandler):
     seen: list[tuple[str, str | None]] = []
     redirect_to: str | None = None
+    redirect_reason: str | None = None
     set_cookie: str | None = None
     files: dict[str, tuple[bytes, str, str | None]] = {}
 
     def do_GET(self):  # noqa: N802
         type(self).seen.append((self.path, self.headers.get("Cookie")))
+        if self.path == "/broken-stream":
+            self.protocol_version = "HTTP/1.1"
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            self.wfile.write(b"synthetic-invalid-chunk-marker\r\n")
+            self.close_connection = True
+            return
         if self.path == "/slow-headers":
             # Header bytes dribbled out, each well inside the read timeout.
             try:
@@ -56,7 +66,8 @@ class _Handler(BaseHTTPRequestHandler):
             except OSError:
                 return
         if self.path.startswith("/hop") and type(self).redirect_to:
-            self.send_response(302)
+            self.send_response(302, type(self).redirect_reason)
+            self.send_header("Content-Length", "0")
             self.send_header("Location", type(self).redirect_to)
             if type(self).set_cookie:
                 self.send_header("Set-Cookie", type(self).set_cookie)
@@ -108,6 +119,34 @@ def test_fetch_ok_through_listed_local_endpoint(server):
     resp = fetcher.fetch(server + "/page")
     assert resp.status_code == 200
     assert _Handler.seen == [("/page", None)]
+
+
+def test_checked_redirect_hides_httpcore_headers_and_httpx_url(server, caplog, monkeypatch):
+    monkeypatch.setattr(_Handler, "protocol_version", "HTTP/1.1")
+    monkeypatch.setattr(_Handler, "redirect_reason", "synthetic-redirect-reason")
+    caplog.set_level(logging.INFO, logger="httpx")
+    caplog.set_level(logging.DEBUG, logger="httpcore.http11")
+    _Handler.redirect_to = server + "/asset?sig=synthetic-signature-marker"
+    with fetcher.checked_response(server + "/hop", stream=True) as response:
+        assert response.http_version == "HTTP/1.1"
+        assert [p for p, _ in _Handler.seen] == ["/hop", "/asset?sig=synthetic-signature-marker"]
+        chunks = response.iter_raw(chunk_size=4)
+        first = next(chunks)
+        with httpx.Client(trust_env=False) as client:
+            assert client.get(server + "/unrelated-request").status_code == 200
+        assert first + b"".join(chunks) == b"<html><body>ok</body></html>"
+    assert "unrelated-request" in caplog.text
+    assert "receive_response_headers.complete" in caplog.text
+    assert "synthetic-signature-marker" not in caplog.text
+    assert "synthetic-redirect-reason" not in caplog.text
+
+
+def test_checked_stream_hides_httpcore_body_error(server, caplog):
+    caplog.set_level(logging.DEBUG, logger="httpcore.http11")
+    with fetcher.checked_response(server + "/broken-stream", stream=True) as response:
+        with pytest.raises(httpx.RemoteProtocolError):
+            response.read()
+    assert "synthetic-invalid-chunk-marker" not in caplog.text
 
 
 def test_redirect_to_protected_value_is_never_sent(server):

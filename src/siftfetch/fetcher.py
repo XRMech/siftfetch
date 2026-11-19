@@ -10,6 +10,8 @@ persisted by this module.
 """
 
 import contextlib
+import ipaddress
+import logging
 import queue
 import re
 import socket
@@ -18,7 +20,8 @@ import threading
 import time
 import urllib.request
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextvars import ContextVar
 from http.cookiejar import CookieJar, DefaultCookiePolicy
 from urllib.parse import urljoin, urlsplit
 
@@ -29,6 +32,41 @@ from siftfetch import egress_policy
 from siftfetch.egress_policy import EgressDenied
 
 _COOKIE_TIMEOUT = 5.0  # seconds to wait for browser cookie store before giving up
+
+# HTTPX logs request URLs at INFO. HTTPcore's HTTP/1.1 DEBUG traces include
+# response headers, reason phrases and remote bytes from framing errors.
+_sending_checked_request = ContextVar("siftfetch_sending_checked_request", default=False)
+
+
+def _allow_transport_record(record):
+    return not _sending_checked_request.get()
+
+
+for _transport_logger in ("httpx", "httpcore.http11"):
+    logging.getLogger(_transport_logger).addFilter(_allow_transport_record)
+
+
+def _without_transport_logs(call, *args, **kwargs):
+    token = _sending_checked_request.set(True)
+    try:
+        return call(*args, **kwargs)
+    finally:
+        _sending_checked_request.reset(token)
+
+
+class _CheckedStream(httpx.SyncByteStream):
+    """Scope deferred body and close traces to the checked response's own I/O."""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def __iter__(self):
+        chunks = iter(self._stream)
+        while (chunk := _without_transport_logs(next, chunks, None)) is not None:
+            yield chunk
+
+    def close(self):
+        _without_transport_logs(self._stream.close)
 
 _AGENT_NAME = "agent-web-fetch/1.0 (automated client"
 
@@ -76,6 +114,23 @@ _TOTAL_SECONDS = 60.0  # all hops and the body together
 
 class FetchBudgetExceeded(Exception):
     """The response passed the size or time budget; reading stopped there."""
+
+
+def _public_read_origin(response):
+    """Origin suitable for site-only records, backed by anonymous direct transport evidence."""
+    extensions = getattr(response, "extensions", {})
+    origin = extensions.get("siftfetch_public_read_origin")
+    if not origin or response.status_code in (401, 407):
+        return None
+    headers = response.headers
+    directives = {part.partition("=")[0].strip().lower()
+                  for part in headers.get("cache-control", "").split(",")}
+    vary = {part.strip().lower() for part in headers.get("vary", "").split(",")}
+    if (directives.intersection({"private", "no-store", "no-cache"})
+            or vary.intersection({"*", "cookie", "authorization"})
+            or "set-cookie" in headers or "www-authenticate" in headers):
+        return None
+    return origin
 
 
 def _load_cookies(browser: str) -> CookieJar | None:
@@ -445,13 +500,17 @@ def checked_response(url: str, *, browser: str = "none", timeout: float = _TIMEO
                      stream: bool, session_kind: str = "unattended",
                      deadline: float | None = None,
                      raise_status: bool = True,
-                     request_headers: dict[str, str] | None = None) -> Iterator[httpx.Response]:
+                     request_headers: dict[str, str] | None = None,
+                     public_only: bool = False,
+                     validate_hop: Callable[[str], None] | None = None) -> Iterator[httpx.Response]:
     """Yield the final response after policy-checking and following each hop.
 
     With stream=True the body is not read yet; the caller reads it inside the
     context and the connection closes on exit. At ``deadline`` (a monotonic
     time) a watchdog closes the client, so a server dribbling headers or a
     stalled hop can't run past it.
+    A supplied validate_hop callback may reject any URL before its DNS check
+    and connection; accepted hops still pass every existing egress check.
     """
     # The browser store is read only when the starting origin may carry
     # cookies; reading it is slow and exposes every session to this process.
@@ -480,9 +539,11 @@ def checked_response(url: str, *, browser: str = "none", timeout: float = _TIMEO
     on_start_origin = True
     with httpx.Client(transport=_PinnedTransport(backend), follow_redirects=False,
                       timeout=httpx_timeout) as client, _watchdog(client, backend, deadline):
-        for _ in range(_MAX_REDIRECTS + 1):
+        for hop in range(_MAX_REDIRECTS + 1):
             if deadline is not None and time.monotonic() >= deadline:
                 raise httpx.ReadTimeout("total fetch deadline passed")
+            if validate_hop is not None:
+                validate_hop(current)
             host = urlsplit(current).hostname
             headers = dict(base_headers)
             on_start_origin = on_start_origin and egress_policy._origin_of(current) == start_origin
@@ -499,6 +560,9 @@ def checked_response(url: str, *, browser: str = "none", timeout: float = _TIMEO
             # Generated headers (the User-Agent carries the contact alias) are
             # checked with the URL: a misconfigured alias never leaves.
             backend.pins[host] = _checked_address(current, headers=headers)
+            if public_only and (egress_policy.destination_allowed(current)
+                                or egress_policy._is_private(backend.pins[host])):
+                raise EgressDenied(egress_policy.Decision("deny", "private_destination"))
             # Owner cookies go only to the starting origin, and stop for good
             # once a redirect leaves it, so a bounce back carries nothing.
             on_start_origin = on_start_origin and egress_policy._origin_of(current) == start_origin
@@ -515,15 +579,32 @@ def checked_response(url: str, *, browser: str = "none", timeout: float = _TIMEO
                 left = max(0.0, deadline - time.monotonic()) + 0.1
                 hop_timeout = httpx.Timeout(connect=min(5.0, left), read=min(timeout, left),
                                             write=min(5.0, left), pool=min(2.0, left))
-            resp = client.send(client.build_request("GET", current, headers=headers,
-                                                    timeout=hop_timeout),
-                               stream=stream)
+            request = client.build_request("GET", current, headers=headers, timeout=hop_timeout)
+            public_direct = hop == 0 and browser == "none" and ipaddress.ip_address(backend.pins[host]).is_global
+            failure_origin = None
+            if (public_direct and not (request.url.userinfo or request.url.query or request.url.fragment)
+                    and not custom and not egress_policy.destination_allowed(current)):
+                failure_origin = str(request.url.copy_with(path="/", query=None, fragment=None))
+            try:
+                resp = _without_transport_logs(client.send, request, stream=stream)
+            except httpx.TransportError as exc:
+                exc.siftfetch_public_read_origin = failure_origin
+                raise
+            if stream:
+                resp.stream = _CheckedStream(resp.stream)
             client.cookies.clear()
             if not (resp.is_redirect and "location" in resp.headers):
+                # Redirects are deliberately ineligible until every hop's
+                # cache directives can be accounted for. Use the pinned peer.
+                resp.extensions["siftfetch_public_direct"] = public_direct
+                resp.extensions["siftfetch_public_read_origin"] = failure_origin
                 try:
                     if raise_status:
                         resp.raise_for_status()
                     yield resp
+                except (httpx.TransportError, httpx.StreamError, httpx.DecodingError, FetchBudgetExceeded) as exc:
+                    exc.siftfetch_public_read_origin = _public_read_origin(resp)
+                    raise
                 finally:
                     resp.close()
                 return

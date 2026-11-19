@@ -23,6 +23,8 @@ Shared label records library calls, snippets, saves, downloads and Chrome reads.
 ## Offline review
 Review changes no log data and makes no network/model calls.
 
+For a persistent site-only index with separate opt-in switches, see [failed pulls and case-study candidates](site-cases.md). The detailed sightings log continues to rotate independently.
+
 ```powershell
 python -m siftfetch.sightings --since 7d --by category
 python -m siftfetch.sightings --since 24h --by domain --json

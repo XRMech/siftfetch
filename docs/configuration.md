@@ -42,6 +42,8 @@ Use config.json or config.toml. TOML wins for non-security settings after both f
 | browser_fetch.sites | [] | Hosts for always-for-listed |
 | download_dir | data folder | Download root; environment overrides |
 | sightings | on | Independent on/off recording switch |
+| failed_sites | off | Set to on to keep local site-only counts of terminal fetch failures and explicit missing-evidence reports |
+| case_study_sites | off | Set to on to keep local site counts and [dated research excerpts](research-cases.md) from eligible detector matches or explicit reports |
 | sightings_max_bytes | 20971520 | Positive rotation threshold |
 | spotlight | paragraph | paragraph/words/off |
 

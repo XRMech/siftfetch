@@ -27,5 +27,15 @@ $env:SIFTFETCH_BROWSER_TESTS = "1"; .venv/Scripts/python.exe -m pytest -q tests/
 
 Client/model live checks belong to a separately scheduled owner harness, never this suite.
 
+## Navigation and MCP isolation acceptance
+
+Run `tests/test_live_navigation.py`, `tests/test_pagination.py` and `tests/test_mcp_isolation_probe.py` for the public navigation and MCP isolation checks. With Playwright and a supported local browser installed, `SIFTFETCH_BROWSER_TESTS=1` includes the real Chromium viewport test against synthetic content and a loopback receiver. Use the [host matrix](mcp-isolation-probe.md) in disposable client projects to verify actual conversation, delegation and restart boundaries.
+
+The registered image and navigation tool checks are in `tests/test_mcp_images.py` and `tests/test_mcp_navigation.py`. They exercise inventory selection, page changes, per-request outbound checks and marked evidence. With Playwright and a local browser available, enable `SIFTFETCH_BROWSER_TESTS=1` for the registered viewport check.
+
+## Research archive checks
+
+Run the site cases, report candidate and case trends tests for local retention, privacy screening, snapshot provenance, review labels and repeat observations. These tests use synthetic policies and temporary storage. See [research cases](research-cases.md).
+
 ## Docs checks
 The docs lint checks frontmatter, verified absolute dates, budgets, tagged fences, relative links and coverage of public functions, MCP tools, config/environment keys and reason codes. Package tests keep init resources aligned with repository examples. See [writing rules](writing-docs.md).

@@ -21,6 +21,7 @@ from bs4 import BeautifulSoup
 from readability import Document
 from markdownify import markdownify as md
 
+from siftfetch.attribute_inventory import collect_attributes
 from siftfetch.hidden_text import mark_hidden
 from siftfetch.injection_scan import PreparedText, defang_markers, safe_metadata
 
@@ -397,59 +398,6 @@ def _render_markdown(fragment_html: str) -> str:
     return html.unescape(markdown)
 
 
-def _attribute_text(soup):
-    """Bounded inventory before extraction discards non-visible carriers.
-
-    Values are plain text, never HTML or executable JSON. Parser-decoded HTML
-    entities are preserved for the normal scanner. Attribute presence alone
-    does not change risk.
-    """
-    import json
-    parts, remaining = [], 32768
-
-    def add(label, value):
-        nonlocal remaining
-        if not isinstance(value, str) or not value.strip() or remaining <= 0:
-            return
-        if value.lstrip().lower().startswith("data:"):
-            return
-        value = value[:remaining]
-        remaining -= len(value)
-        parts.append(f"[ATTRIBUTE {label}] {value} [END ATTRIBUTE]")
-
-    for el in soup.find_all(True):
-        for key, value in list(el.attrs.items()):
-            if key in {"alt", "title", "aria-label", "aria-description", "placeholder"} or key.startswith("data-") and key != "data-sift-hidden":
-                add(f"{el.name}.{key}", value)
-                # Do not let markdownify repeat a title outside containment.
-                if key == "title":
-                    del el.attrs[key]
-        if el.name == "meta" and (el.get("name") or el.get("property")):
-            add("meta.content", el.get("content"))
-        if el.name in {"title", "desc"} and el.find_parent("svg"):
-            add("svg." + el.name, el.get_text(" ", strip=True))
-        if el.name == "script" and str(el.get("type", "")).lower() in {"application/ld+json", "application/json"}:
-            raw = el.string or ""
-            if len(raw) > 32768:
-                add("script.json", raw)
-                continue
-            try:
-                data = json.loads(raw)
-            except (ValueError, RecursionError):
-                add("script.json", raw)
-                continue
-            stack = [data]
-            while stack and remaining > 0:
-                item = stack.pop()
-                if isinstance(item, dict):
-                    stack.extend(reversed(list(item.values())))
-                elif isinstance(item, list):
-                    stack.extend(reversed(item))
-                else:
-                    add("script.json", item)
-    return "\n\n".join(parts)
-
-
 def _pick_fallback_fragment(soup: BeautifulSoup) -> str:
     """Choose a broader content fragment when readability returns too little."""
     candidates = []
@@ -622,21 +570,26 @@ def extract_section(text: str, section: str) -> str:
     working from the outline can ask for "class Mesh" without reproducing the
     heading's exact prefix. Nested subsections are included in the span.
     """
+    return _section_result(text, section)[0]
+
+
+def _section_result(text: str, section: str) -> tuple[str, bool]:
+    """Return the section or a local diagnostic, and whether a section matched."""
     heads = _headings(text)
     if not heads:
-        return f"*No headings found in this {len(text):,}-char document.*"
+        return f"*No headings found in this {len(text):,}-char document.*", False
 
     needle = section.strip().lower()
     exact = [h for h in heads if h["title"].lower() == needle]
     hits = exact or [h for h in heads if needle in h["title"].lower()]
     if not hits:
         return (
-            f'*No section matching "{section}". '
+            f'*No section matching "{safe_metadata(section)}". '
             f'Use mode="outline" to list all {len(heads)} section titles.*'
-        )
+        ), False
     if len(hits) > 1 and not exact:
         names = ", ".join(repr(h["title"]) for h in hits[:12])
-        return f"*Ambiguous: {len(hits)} sections match {section!r} -- {names}. Use an exact title.*"
+        return f"*Ambiguous: {len(hits)} sections match {safe_metadata(section)!r} -- {names}. Use an exact title.*", False
 
     h = hits[0]
     # Extend through any deeper-level subsections that belong to this heading.
@@ -646,7 +599,7 @@ def extract_section(text: str, section: str) -> str:
             end = other["end"]
         elif other["start"] >= h["end"] and other["level"] <= h["level"]:
             break
-    return text[h["start"]:end]
+    return text[h["start"]:end], True
 
 
 def present_markdown(
@@ -690,6 +643,8 @@ def clean_html(
     mode: str = "content",
     section: str | None = None,
     extract: str = "auto",
+    *,
+    fragment: bool = False,
 ) -> str:
     """Convert raw HTML to clean, token-efficient Markdown.
 
@@ -720,6 +675,9 @@ def clean_html(
                 too. The escape hatch for documentation layouts where notes,
                 warnings, or the API index itself live in stripped elements.
 
+        fragment: The caller selected a known HTML fragment. Its word count
+            cannot indicate whether the original page was client-rendered.
+
     Returns:
         Markdown string. With include_metadata=True: title heading + source/fetch
         lines + separator + body + links. With include_metadata=False: title
@@ -732,7 +690,7 @@ def clean_html(
     nonce = secrets.token_hex(16)
     start_marker, end_marker = f"SFHIDDENSTART{nonce}", f"SFHIDDENEND{nonce}"
     hidden_reasons = mark_hidden(soup, start_marker, end_marker)
-    attribute_text = _attribute_text(soup)
+    inventory = collect_attributes(soup, remove_titles=True)
 
     def prepared(text):
         text = defang_markers(text)
@@ -757,7 +715,7 @@ def clean_html(
 
     # A near-empty body means the text was never in the HTML. Say so, rather
     # than returning a blank page that reads as "this topic has no content".
-    if body_word_count < _JS_PAGE_WORDS:
+    if not fragment and body_word_count < _JS_PAGE_WORDS:
         notices.append(
             f"*[EXTRACTION WARNING: the fetched HTML contains only "
             f"{body_word_count} words of text. This page is almost certainly "
@@ -840,28 +798,39 @@ def clean_html(
 
     if notices:
         markdown = "\n\n".join(notices) + "\n\n" + markdown
-    if attribute_text:
-        markdown = attribute_text + "\n\n" + markdown
+    if inventory.large:
+        markdown = markdown + "\n\n" + inventory.text
+    elif inventory.text:
+        markdown = inventory.text + "\n\n" + markdown
 
     # Replace private tokens before any operation can slice through one.
     markdown = prepared(markdown)
     title = prepared(title)
 
+    def result_text(value, *, diagnostic=False):
+        # Preserve the scan input when paging or a small view hides attributes.
+        result = PreparedText(value, source_url=url)
+        result.attribute_inventory = inventory
+        result.local_diagnostic = diagnostic
+        return result
+
     # Step 4b: Structure-aware views. Both are computed against the whole
     # cleaned body, before any truncation, so an oversized document stays fully
     # reachable: outline to plan the split, section to pull one piece at a time.
     if mode == "outline":
-        return PreparedText(document_outline(markdown), source_url=url)
+        return result_text(document_outline(markdown))
     if section:
-        picked = extract_section(markdown, section)
-        return PreparedText(_truncate_with_marker(picked, max_chars) if max_chars else picked, source_url=url)
+        picked, matched = _section_result(markdown, section)
+        return result_text(_truncate_with_marker(picked, max_chars) if max_chars else picked,
+                           diagnostic=not matched)
 
     # Paging: drop everything before offset, and say what was skipped so the
     # window is never mistaken for the start of the document.
     if offset:
         if offset >= len(markdown):
-            return (
-                f"*Offset {offset:,} is past end of document ({len(markdown):,} chars).*"
+            return result_text(
+                f"*Offset {offset:,} is past end of document ({len(markdown):,} chars).*",
+                diagnostic=True,
             )
         markdown = (
             f"*[Resuming at offset {offset:,} of {len(markdown):,} chars; "
@@ -898,7 +867,12 @@ def clean_html(
             result = f"{result}\n\n{links_section}"
 
     # Step 6: Final truncation safeguard.
+    truncated = body != markdown
     if max_chars and len(result) > max_chars:
         result = _truncate_with_marker(result, max_chars)
+        truncated = True
 
-    return PreparedText(result, source_url=url)
+    prepared_result = result_text(result)
+    prepared_result.truncated = truncated
+    prepared_result.thin_page = not fragment and body_word_count < _JS_PAGE_WORDS
+    return prepared_result

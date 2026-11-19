@@ -220,7 +220,7 @@ SECRET_FILE_MODES = ("strict", "standard", "off")
 CONFIG_KEYS = frozenset({"enabled", "blocked_domains", "contact_alias", "substitute",
     "secret_file_mode", "cookie_origins", "cookies_attended_only", "local_endpoints",
     "mcp_local_tools", "guard_lock", "browser_fetch", "download_dir", "sightings",
-    "sightings_max_bytes", "spotlight", "shell_fetch"})
+    "sightings_max_bytes", "failed_sites", "case_study_sites", "spotlight", "shell_fetch"})
 _SECURITY_KEYS = CONFIG_KEYS - {"download_dir", "sightings", "sightings_max_bytes", "spotlight"}
 SUBSTITUTE_KEYS = frozenset({"name", "email", "phone", "postal_address", "organization"})
 
@@ -331,6 +331,9 @@ def validate_policy(name: str, data: object) -> dict:
             require(data["shell_fetch"] in ("reroute", "deny", "off"), "shell_fetch")
         if "sightings" in data:
             require(data["sightings"] in ("on", "off"), "sightings")
+        for key in ("failed_sites", "case_study_sites"):
+            if key in data:
+                require(data[key] in ("on", "off"), key)
         if "sightings_max_bytes" in data:
             require(type(data["sightings_max_bytes"]) is int and data["sightings_max_bytes"] > 0, "sightings_max_bytes")
         if "download_dir" in data:
@@ -483,7 +486,8 @@ def policy_status() -> dict:
         safe = {key: config.get(key, default) for key, default in (
             ("enabled", True), ("secret_file_mode", "strict"), ("cookies_attended_only", True),
             ("shell_fetch", "reroute"),
-            ("spotlight", "paragraph"), ("sightings", "on"), ("sightings_max_bytes", 20 * 1024 * 1024))}
+            ("spotlight", "paragraph"), ("sightings", "on"), ("sightings_max_bytes", 20 * 1024 * 1024),
+            ("failed_sites", "off"), ("case_study_sites", "off"))}
         safe.update({key: len(config.get(key, [])) for key in
                      ("blocked_domains", "cookie_origins", "local_endpoints", "mcp_local_tools")})
         browser = browser_fetch_settings()
