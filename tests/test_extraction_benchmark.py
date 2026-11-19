@@ -1,8 +1,14 @@
+import importlib.util
+from pathlib import Path
 import sys
 
 import pytest
 
-from tools import extraction_benchmark as benchmark
+# The clean-install suite runs outside the checkout using the installed wheel.
+script = Path(__file__).resolve().parents[1] / "tools" / "extraction_benchmark.py"
+spec = importlib.util.spec_from_file_location("extraction_benchmark", script)
+benchmark = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(benchmark)
 
 
 def test_extraction_baseline():
