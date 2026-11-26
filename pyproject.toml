@@ -36,7 +36,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-claude = ["claude-agent-sdk==0.2.185"]
+claude = ["claude-agent-sdk==0.2.187"]
 images = ["Pillow>=12.2"]
 windows-ocr = [
     "Pillow>=12.2",
